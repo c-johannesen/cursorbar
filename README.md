@@ -16,11 +16,30 @@ No browser tab, no manual cookie paste — CursorBar reads your session from the
 
 - macOS 14 (Sonoma) or later
 - [Cursor IDE](https://cursor.com) installed and signed in on this Mac
-- Swift 6 — comes with Xcode or [Command Line Tools](https://developer.apple.com/download/all/) (`xcode-select --install`)
+- Swift 6 — only needed if [building from source](#build-from-source)
 
 ## Install
 
-### One command (clone + build + install + launch)
+### Homebrew (recommended)
+
+```bash
+brew tap c-johannesen/cursorbar
+brew install cursorbar
+```
+
+Or without adding the tap permanently:
+
+```bash
+brew install c-johannesen/cursorbar/cursorbar
+```
+
+This installs `CursorBar.app` to `/Applications`. Open it from Applications or run:
+
+```bash
+open -a CursorBar
+```
+
+### Build from source
 
 ```bash
 git clone https://github.com/c-johannesen/cursorbar.git
@@ -28,21 +47,19 @@ cd cursorbar
 bash scripts/install.sh
 ```
 
-This builds CursorBar, installs it to `/Applications/CursorBar.app`, and opens it. Look for your usage percentage in the menu bar.
-
-### Already cloned?
-
-```bash
-bash scripts/install.sh
-```
+This builds CursorBar locally, installs it to `/Applications/CursorBar.app`, and opens it.
 
 ### Launch later
 
 ```bash
-bash scripts/launch.sh
+open -a CursorBar
 ```
 
-Or open **CursorBar** from `/Applications`.
+Or, if you built from source:
+
+```bash
+bash scripts/launch.sh
+```
 
 ## Usage
 

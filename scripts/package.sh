@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="CursorBar"
 BUILD_DIR="$ROOT/.build/release"
 APP_BUNDLE="$ROOT/$APP_NAME.app"
+VERSION="${VERSION:-1.0.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-1}"
 
 cd "$ROOT"
 
@@ -18,7 +20,7 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
-cat > "$APP_BUNDLE/Contents/Info.plist" <<'EOF'
+cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -36,9 +38,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'EOF'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>${VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${BUILD_NUMBER}</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
