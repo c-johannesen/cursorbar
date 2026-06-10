@@ -124,6 +124,12 @@ scripts/
 - Individual Cursor accounts only (reads your local IDE session)
 - Not signed with an Apple Developer ID — first launch may require right-click → Open, or use `scripts/launch.sh`
 
+## Contributing
+
+Pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+The `main` branch is protected: only the repository owner can push to or merge into `main`. Everyone else should fork the repo and open a PR.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
