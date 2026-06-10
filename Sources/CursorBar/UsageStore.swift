@@ -67,7 +67,7 @@ final class UsageStore: ObservableObject {
         summary?.individualUsage.plan.breakdown.total
     }
 
-    /// Raw plan usage reported by the API. May include on-demand spend.
+    /// Plan usage reported by the API (included + bonus pool only; on-demand is tracked separately).
     var rawUsedCreditsCents: Int? {
         guard let summary else { return nil }
         let total = Double(summary.individualUsage.plan.breakdown.total)
@@ -75,17 +75,16 @@ final class UsageStore: ObservableObject {
         return Int((total * percent / 100.0).rounded())
     }
 
-    /// Amount consumed from the included + bonus pool only, excluding on-demand overspend.
+    /// Amount consumed from the included + bonus pool, capped at the pool size.
     var includedUsedCreditsCents: Int? {
         guard let rawUsedCreditsCents, let totalCreditsCents else { return nil }
-        let withoutOnDemand = rawUsedCreditsCents - (onDemandEnabled ? onDemandUsedCents : 0)
-        return min(max(withoutOnDemand, 0), totalCreditsCents)
+        return min(rawUsedCreditsCents, totalCreditsCents)
     }
 
     /// Included pool usage percentage, capped at 100%.
     var includedPercentUsed: Double? {
-        guard let includedUsedCreditsCents, let totalCreditsCents, totalCreditsCents > 0 else { return nil }
-        return min(Double(includedUsedCreditsCents) / Double(totalCreditsCents) * 100.0, 100)
+        guard let percent = summary?.individualUsage.plan.totalPercentUsed else { return nil }
+        return min(percent, 100)
     }
 
     var includedRemainingCreditsCents: Int? {
@@ -109,11 +108,10 @@ final class UsageStore: ObservableObject {
         summary?.individualUsage.onDemand.remaining
     }
 
-    /// Usage beyond the included + bonus credit pool, excluding on-demand spend.
+    /// Usage beyond the included + bonus credit pool.
     var includedOverageCents: Int {
         guard let rawUsedCreditsCents, let totalCreditsCents else { return 0 }
-        let withoutOnDemand = rawUsedCreditsCents - (onDemandEnabled ? onDemandUsedCents : 0)
-        return max(withoutOnDemand - totalCreditsCents, 0)
+        return max(rawUsedCreditsCents - totalCreditsCents, 0)
     }
 
     var overspendCents: Int {

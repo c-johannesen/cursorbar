@@ -22,13 +22,14 @@ enum CursorBarMain {
                 let onDemand = summary.individualUsage.onDemand
                 let total = Double(plan.breakdown.total)
                 let rawUsed = total * plan.totalPercentUsed / 100.0
+                let overage = max(rawUsed - total, 0)
                 let onDemandUsed = onDemand.enabled ? Double(onDemand.used) : 0
-                let includedUsed = min(max(rawUsed - onDemandUsed, 0), total)
-                let percent = total > 0 ? includedUsed / total * 100.0 : 0
-                if onDemandUsed > 0 {
-                    print(String(format: "OK %.0f%% (overspend $%.2f)", min(percent, 100), onDemandUsed / 100.0))
+                let overspend = overage + onDemandUsed
+                let percent = min(plan.totalPercentUsed, 100)
+                if overspend > 0 {
+                    print(String(format: "OK %.0f%% (overspend $%.2f)", percent, overspend / 100.0))
                 } else {
-                    print(String(format: "OK %.0f%%", min(percent, 100)))
+                    print(String(format: "OK %.0f%%", percent))
                 }
                 exit(0)
             } catch {
