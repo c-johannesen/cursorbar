@@ -18,8 +18,18 @@ enum CursorBarMain {
             defer { group.leave() }
             do {
                 let summary = try await CursorAPI.fetchUsageSummary()
-                let percent = summary.individualUsage.plan.totalPercentUsed
-                print(String(format: "OK %.0f%%", min(percent, 100)))
+                let plan = summary.individualUsage.plan
+                let onDemand = summary.individualUsage.onDemand
+                let total = Double(plan.breakdown.total)
+                let rawUsed = total * plan.totalPercentUsed / 100.0
+                let onDemandUsed = onDemand.enabled ? Double(onDemand.used) : 0
+                let includedUsed = min(max(rawUsed - onDemandUsed, 0), total)
+                let percent = total > 0 ? includedUsed / total * 100.0 : 0
+                if onDemandUsed > 0 {
+                    print(String(format: "OK %.0f%% (overspend $%.2f)", min(percent, 100), onDemandUsed / 100.0))
+                } else {
+                    print(String(format: "OK %.0f%%", min(percent, 100)))
+                }
                 exit(0)
             } catch {
                 fputs("ERROR: \(error.localizedDescription)\n", stderr)
@@ -43,10 +53,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct CursorBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = UsageStore()
+    @StateObject private var updater = UpdateChecker()
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContentView(store: store)
+            MenuContentView(store: store, updater: updater)
         } label: {
             Text(store.menuBarLabel)
                 .monospacedDigit()
@@ -57,6 +68,7 @@ struct CursorBarApp: App {
 
 private struct MenuContentView: View {
     @ObservedObject var store: UsageStore
+    @ObservedObject var updater: UpdateChecker
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -71,11 +83,38 @@ private struct MenuContentView: View {
                 usageSection
             }
 
+            if updater.availableUpdate != nil || updater.statusMessage != nil {
+                Divider()
+                updateSection
+            }
+
             Divider()
             footer
         }
         .padding(14)
         .frame(width: 280)
+    }
+
+    @ViewBuilder
+    private var updateSection: some View {
+        if let update = updater.availableUpdate {
+            HStack {
+                Text("Update available: v\(update.version)")
+                    .font(.caption)
+                Spacer()
+                Button(updater.isUpdating ? "Updating…" : "Update") {
+                    Task { await updater.installUpdate() }
+                }
+                .disabled(updater.isUpdating)
+            }
+        }
+
+        if let statusMessage = updater.statusMessage {
+            Text(statusMessage)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var header: some View {
@@ -230,11 +269,20 @@ private struct MenuContentView: View {
 
     private var footer: some View {
         HStack {
-            Text("Updated \(store.lastUpdatedText)")
+            Text("Updated \(store.lastUpdatedText) · v\(UpdateChecker.currentVersion)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
             Spacer()
+
+            Button {
+                Task { await updater.checkForUpdates(announceResult: true) }
+            } label: {
+                Image(systemName: "arrow.down.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("Check for updates")
+            .disabled(updater.isChecking || updater.isUpdating)
 
             Button("Refresh") {
                 Task { await store.refresh() }

@@ -14,6 +14,7 @@ No browser tab, no manual cookie paste — CursorBar reads your session from the
 - **Billing cycle info** — current period dates and days until reset
 - **Auto-refresh** — on launch and every 5 minutes
 - **Manual refresh** — click Refresh in the dropdown anytime
+- **Built-in updates** — checks GitHub for new versions on startup, with a manual check button and one-click update from the dropdown
 
 ## Requirements
 

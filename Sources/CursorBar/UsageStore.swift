@@ -34,6 +34,9 @@ final class UsageStore: ObservableObject {
         if errorMessage != nil, summary == nil {
             return "!"
         }
+        if hasOverspend {
+            return Self.formatDollarsCompact(cents: overspendCents)
+        }
         guard let includedPercentUsed else {
             return isLoading ? "…" : "!"
         }
@@ -60,20 +63,11 @@ final class UsageStore: ObservableObject {
         summary?.membershipType.capitalized ?? "Unknown"
     }
 
-    var rawPercentUsed: Double? {
-        summary?.individualUsage.plan.totalPercentUsed
-    }
-
-    /// Included pool usage, capped at 100%.
-    var includedPercentUsed: Double? {
-        guard let rawPercentUsed else { return nil }
-        return min(rawPercentUsed, 100)
-    }
-
     var totalCreditsCents: Int? {
         summary?.individualUsage.plan.breakdown.total
     }
 
+    /// Raw plan usage reported by the API. May include on-demand spend.
     var rawUsedCreditsCents: Int? {
         guard let summary else { return nil }
         let total = Double(summary.individualUsage.plan.breakdown.total)
@@ -81,10 +75,17 @@ final class UsageStore: ObservableObject {
         return Int((total * percent / 100.0).rounded())
     }
 
-    /// Amount consumed from the included + bonus pool only.
+    /// Amount consumed from the included + bonus pool only, excluding on-demand overspend.
     var includedUsedCreditsCents: Int? {
         guard let rawUsedCreditsCents, let totalCreditsCents else { return nil }
-        return min(rawUsedCreditsCents, totalCreditsCents)
+        let withoutOnDemand = rawUsedCreditsCents - (onDemandEnabled ? onDemandUsedCents : 0)
+        return min(max(withoutOnDemand, 0), totalCreditsCents)
+    }
+
+    /// Included pool usage percentage, capped at 100%.
+    var includedPercentUsed: Double? {
+        guard let includedUsedCreditsCents, let totalCreditsCents, totalCreditsCents > 0 else { return nil }
+        return min(Double(includedUsedCreditsCents) / Double(totalCreditsCents) * 100.0, 100)
     }
 
     var includedRemainingCreditsCents: Int? {
@@ -108,10 +109,11 @@ final class UsageStore: ObservableObject {
         summary?.individualUsage.onDemand.remaining
     }
 
-    /// Usage beyond the included + bonus credit pool.
+    /// Usage beyond the included + bonus credit pool, excluding on-demand spend.
     var includedOverageCents: Int {
         guard let rawUsedCreditsCents, let totalCreditsCents else { return 0 }
-        return max(rawUsedCreditsCents - totalCreditsCents, 0)
+        let withoutOnDemand = rawUsedCreditsCents - (onDemandEnabled ? onDemandUsedCents : 0)
+        return max(withoutOnDemand - totalCreditsCents, 0)
     }
 
     var overspendCents: Int {
@@ -156,6 +158,12 @@ final class UsageStore: ObservableObject {
         return currencyFormatter.string(from: NSNumber(value: dollars)) ?? String(format: "$%.2f", dollars)
     }
 
+    /// Whole-dollar amount for the compact menu bar label.
+    static func formatDollarsCompact(cents: Int) -> String {
+        let dollars = (Double(cents) / 100.0).rounded()
+        return compactCurrencyFormatter.string(from: NSNumber(value: dollars)) ?? String(format: "$%.0f", dollars)
+    }
+
     private func startAutoRefresh() {
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
@@ -191,6 +199,16 @@ final class UsageStore: ObservableObject {
         formatter.currencyCode = "USD"
         formatter.maximumFractionDigits = 2
         formatter.minimumFractionDigits = 2
+        return formatter
+    }()
+
+    private static let compactCurrencyFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = "USD"
+        formatter.currencySymbol = "$"
+        formatter.maximumFractionDigits = 0
+        formatter.minimumFractionDigits = 0
         return formatter
     }()
 }
