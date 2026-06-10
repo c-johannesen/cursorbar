@@ -34,20 +34,23 @@ final class UsageStore: ObservableObject {
         if errorMessage != nil, summary == nil {
             return "!"
         }
-        guard let percentUsed else {
+        guard let includedPercentUsed else {
             return isLoading ? "…" : "!"
         }
-        return "\(Int(percentUsed.rounded()))%"
+        return "\(Int(includedPercentUsed.rounded()))%"
     }
 
     var statusColor: Color {
-        guard let percentUsed else {
-            return .secondary
-        }
-        if percentUsed >= 90 {
+        if hasOverspend {
             return .red
         }
-        if percentUsed >= 70 {
+        guard let includedPercentUsed else {
+            return .secondary
+        }
+        if includedPercentUsed >= 90 {
+            return .red
+        }
+        if includedPercentUsed >= 70 {
             return .yellow
         }
         return .green
@@ -57,24 +60,36 @@ final class UsageStore: ObservableObject {
         summary?.membershipType.capitalized ?? "Unknown"
     }
 
-    var percentUsed: Double? {
+    var rawPercentUsed: Double? {
         summary?.individualUsage.plan.totalPercentUsed
+    }
+
+    /// Included pool usage, capped at 100%.
+    var includedPercentUsed: Double? {
+        guard let rawPercentUsed else { return nil }
+        return min(rawPercentUsed, 100)
     }
 
     var totalCreditsCents: Int? {
         summary?.individualUsage.plan.breakdown.total
     }
 
-    var usedCreditsCents: Int? {
+    var rawUsedCreditsCents: Int? {
         guard let summary else { return nil }
         let total = Double(summary.individualUsage.plan.breakdown.total)
         let percent = summary.individualUsage.plan.totalPercentUsed
         return Int((total * percent / 100.0).rounded())
     }
 
-    var remainingCreditsCents: Int? {
-        guard let totalCreditsCents, let usedCreditsCents else { return nil }
-        return max(totalCreditsCents - usedCreditsCents, 0)
+    /// Amount consumed from the included + bonus pool only.
+    var includedUsedCreditsCents: Int? {
+        guard let rawUsedCreditsCents, let totalCreditsCents else { return nil }
+        return min(rawUsedCreditsCents, totalCreditsCents)
+    }
+
+    var includedRemainingCreditsCents: Int? {
+        guard let totalCreditsCents, let includedUsedCreditsCents else { return nil }
+        return max(totalCreditsCents - includedUsedCreditsCents, 0)
     }
 
     var onDemandEnabled: Bool {
@@ -95,8 +110,8 @@ final class UsageStore: ObservableObject {
 
     /// Usage beyond the included + bonus credit pool.
     var includedOverageCents: Int {
-        guard let usedCreditsCents, let totalCreditsCents else { return 0 }
-        return max(usedCreditsCents - totalCreditsCents, 0)
+        guard let rawUsedCreditsCents, let totalCreditsCents else { return 0 }
+        return max(rawUsedCreditsCents - totalCreditsCents, 0)
     }
 
     var overspendCents: Int {

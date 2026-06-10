@@ -19,7 +19,7 @@ enum CursorBarMain {
             do {
                 let summary = try await CursorAPI.fetchUsageSummary()
                 let percent = summary.individualUsage.plan.totalPercentUsed
-                print(String(format: "OK %.0f%%", percent))
+                print(String(format: "OK %.0f%%", min(percent, 100)))
                 exit(0)
             } catch {
                 fputs("ERROR: \(error.localizedDescription)\n", stderr)
@@ -103,7 +103,7 @@ private struct MenuContentView: View {
 
     @ViewBuilder
     private var usageSection: some View {
-        if let percentUsed = store.percentUsed {
+        if let percentUsed = store.includedPercentUsed {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Included usage")
@@ -117,9 +117,9 @@ private struct MenuContentView: View {
                 ProgressView(value: min(max(percentUsed / 100.0, 0), 1))
                     .tint(store.statusColor)
 
-                if let used = store.usedCreditsCents,
+                if let used = store.includedUsedCreditsCents,
                    let total = store.totalCreditsCents,
-                   let remaining = store.remainingCreditsCents
+                   let remaining = store.includedRemainingCreditsCents
                 {
                     HStack {
                         Text("Used")
