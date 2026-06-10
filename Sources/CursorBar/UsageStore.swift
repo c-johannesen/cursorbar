@@ -85,6 +85,28 @@ final class UsageStore: ObservableObject {
         summary?.individualUsage.onDemand.used ?? 0
     }
 
+    var onDemandLimitCents: Int? {
+        summary?.individualUsage.onDemand.limit
+    }
+
+    var onDemandRemainingCents: Int? {
+        summary?.individualUsage.onDemand.remaining
+    }
+
+    /// Usage beyond the included + bonus credit pool.
+    var includedOverageCents: Int {
+        guard let usedCreditsCents, let totalCreditsCents else { return 0 }
+        return max(usedCreditsCents - totalCreditsCents, 0)
+    }
+
+    var overspendCents: Int {
+        includedOverageCents + (onDemandEnabled ? onDemandUsedCents : 0)
+    }
+
+    var hasOverspend: Bool {
+        overspendCents > 0
+    }
+
     var billingCycleEndDate: Date? {
         guard let end = summary?.billingCycleEnd else { return nil }
         return Self.iso8601Formatter.date(from: end)

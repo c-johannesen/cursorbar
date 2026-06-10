@@ -141,13 +141,82 @@ private struct MenuContentView: View {
             }
         }
 
+        if store.hasOverspend {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Overspend")
+                        .font(.subheadline.weight(.medium))
+                    Spacer()
+                    Text(UsageStore.formatDollars(cents: store.overspendCents))
+                        .monospacedDigit()
+                        .foregroundStyle(.red)
+                }
+
+                if store.includedOverageCents > 0 {
+                    HStack {
+                        Text("Over included")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(UsageStore.formatDollars(cents: store.includedOverageCents))
+                            .monospacedDigit()
+                            .foregroundStyle(.red)
+                    }
+                    .font(.caption)
+                }
+
+                if store.onDemandEnabled, store.onDemandUsedCents > 0 {
+                    HStack {
+                        Text("On-demand")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(UsageStore.formatDollars(cents: store.onDemandUsedCents))
+                            .monospacedDigit()
+                            .foregroundStyle(.red)
+                    }
+                    .font(.caption)
+                }
+            }
+        }
+
         if store.onDemandEnabled {
-            HStack {
-                Text("On-demand spend")
-                    .font(.subheadline.weight(.medium))
-                Spacer()
-                Text(UsageStore.formatDollars(cents: store.onDemandUsedCents))
-                    .monospacedDigit()
+            VStack(alignment: .leading, spacing: 6) {
+                if !store.hasOverspend {
+                    HStack {
+                        Text("On-demand spend")
+                            .font(.subheadline.weight(.medium))
+                        Spacer()
+                        if let limit = store.onDemandLimitCents {
+                            Text("\(UsageStore.formatDollars(cents: store.onDemandUsedCents)) / \(UsageStore.formatDollars(cents: limit))")
+                                .monospacedDigit()
+                        } else {
+                            Text(UsageStore.formatDollars(cents: store.onDemandUsedCents))
+                                .monospacedDigit()
+                        }
+                    }
+                }
+
+                if let limit = store.onDemandLimitCents {
+                    HStack {
+                        Text(store.hasOverspend ? "On-demand budget" : "On-demand limit")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(UsageStore.formatDollars(cents: limit))
+                            .monospacedDigit()
+                    }
+                    .font(.caption)
+                }
+
+                if let remaining = store.onDemandRemainingCents {
+                    HStack {
+                        Text("On-demand remaining")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(UsageStore.formatDollars(cents: remaining))
+                            .monospacedDigit()
+                            .foregroundStyle(remaining == 0 ? .red : .primary)
+                    }
+                    .font(.caption)
+                }
             }
         }
 

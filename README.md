@@ -10,6 +10,7 @@ No browser tab, no manual cookie paste — CursorBar reads your session from the
 
 - **Menu bar percentage** — e.g. `42%` of included usage used
 - **Usage breakdown** — dollar amounts used, total credits (including bonus), and remaining balance
+- **Overspend tracking** — shows charges beyond included credits and on-demand spend with budget/remaining
 - **Billing cycle info** — current period dates and days until reset
 - **Auto-refresh** — on launch and every 5 minutes
 - **Manual refresh** — click Refresh in the dropdown anytime
