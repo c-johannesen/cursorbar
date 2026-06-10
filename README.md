@@ -1,0 +1,129 @@
+# CursorBar
+
+A lightweight macOS menu bar app that shows your Cursor plan usage and how much you have left this billing cycle.
+
+No browser tab, no manual cookie paste — CursorBar reads your session from the local Cursor IDE database and fetches usage from Cursor's dashboard API.
+
+## Features
+
+- **Menu bar percentage** — e.g. `42%` of included usage used
+- **Usage breakdown** — dollar amounts used, total credits (including bonus), and remaining balance
+- **Billing cycle info** — current period dates and days until reset
+- **Auto-refresh** — on launch and every 5 minutes
+- **Manual refresh** — click Refresh in the dropdown anytime
+
+## Requirements
+
+- macOS 14 (Sonoma) or later
+- [Cursor IDE](https://cursor.com) installed and signed in on this Mac
+- Swift 6 — comes with Xcode or [Command Line Tools](https://developer.apple.com/download/all/) (`xcode-select --install`)
+
+## Install
+
+### One command (clone + build + install + launch)
+
+```bash
+git clone https://github.com/c-johannesen/cursorbar.git
+cd cursorbar
+bash scripts/install.sh
+```
+
+This builds CursorBar, installs it to `/Applications/CursorBar.app`, and opens it. Look for your usage percentage in the menu bar.
+
+### Already cloned?
+
+```bash
+bash scripts/install.sh
+```
+
+### Launch later
+
+```bash
+bash scripts/launch.sh
+```
+
+Or open **CursorBar** from `/Applications`.
+
+## Usage
+
+| Menu bar | Click to open dropdown |
+|----------|------------------------|
+| `42%` | Plan name, billing dates, progress bar, used/remaining dollars, refresh & quit |
+
+**Color in dropdown** (progress bar and percentage):
+
+- Green — under 70% used
+- Yellow — 70–89%
+- Red — 90% or higher
+
+**Auto-refresh:** immediately on launch, then every **5 minutes** while the app is running.
+
+**Errors:** if something goes wrong, the menu bar shows `!` — open the dropdown for details.
+
+## Troubleshooting
+
+Check that CursorBar can read your account:
+
+```bash
+/Applications/CursorBar.app/Contents/MacOS/CursorBar --status
+```
+
+Expected output: `OK 42%` (your percentage will differ).
+
+Common issues:
+
+| Problem | Fix |
+|---------|-----|
+| `!` in menu bar | Make sure Cursor is installed and you're signed in, then click **Refresh** |
+| App won't open from Finder | Run `bash scripts/launch.sh` — it clears Gatekeeper quarantine flags |
+| `Swift is not installed` | Run `xcode-select --install` |
+| `No auth token found` | Sign out and back into Cursor, then relaunch CursorBar |
+
+## How it works
+
+1. Reads `cursorAuth/accessToken` from Cursor's local SQLite database  
+   `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`
+2. Derives a session cookie from the JWT
+3. Calls `GET https://cursor.com/api/usage-summary`
+
+The token is read fresh on every refresh and is **never stored** by CursorBar.
+
+## Development
+
+```bash
+git clone https://github.com/c-johannesen/cursorbar.git
+cd cursorbar
+
+# Build only
+bash scripts/package.sh
+
+# Build, install to /Applications, and launch
+bash scripts/package.sh --install --open
+
+# Verify API access
+.build/release/CursorBar --status
+```
+
+Project layout:
+
+```
+Sources/CursorBar/
+  App.swift           # MenuBarExtra UI
+  TokenProvider.swift # Read auth from Cursor IDE DB
+  CursorAPI.swift     # Fetch usage-summary
+  UsageStore.swift    # Refresh timer & display state
+scripts/
+  install.sh          # One-step install
+  launch.sh           # Start the app
+  package.sh          # Build .app bundle
+```
+
+## Limitations
+
+- Uses Cursor's **undocumented** dashboard API — may break without notice
+- Individual Cursor accounts only (reads your local IDE session)
+- Not signed with an Apple Developer ID — first launch may require right-click → Open, or use `scripts/launch.sh`
+
+## License
+
+MIT — see [LICENSE](LICENSE).
