@@ -4,6 +4,8 @@ A lightweight macOS menu bar app that shows your Cursor plan usage and how much 
 
 No browser tab, no manual cookie paste — CursorBar reads your session from the local Cursor IDE database and fetches usage from Cursor's dashboard API.
 
+![CursorBar showing 42% usage in the menu bar with plan details, used/remaining amounts, and billing cycle](docs/screenshot.png)
+
 ## Features
 
 - **Menu bar percentage** — e.g. `42%` of included usage used
