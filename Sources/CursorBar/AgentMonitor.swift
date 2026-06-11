@@ -1,5 +1,31 @@
+import AppKit
 import Foundation
 import SQLite3
+
+struct AgentNeedingInput: Identifiable {
+    let id: String
+    let name: String
+    let reason: String
+    let lastUpdatedAt: TimeInterval
+
+    /// Opens the agent in Cursor via the IDE's deeplink handler (`selectAgentRequested`).
+    /// The `bcId` query parameter accepts local composer IDs as well as cloud agent IDs.
+    func openInCursor() {
+        var components = URLComponents()
+        components.scheme = "cursor"
+        components.host = "anysphere.cursor-deeplink"
+        components.path = "/background-agent"
+        components.queryItems = [URLQueryItem(name: "bcId", value: id)]
+        guard let url = components.url else { return }
+        NSWorkspace.shared.open(url)
+    }
+}
+
+enum AgentMonitorFormatting {
+    static func compactCount(_ count: Int) -> String {
+        count > 9 ? "9+" : "\(count)"
+    }
+}
 
 /// Monitors live Cursor agents using local data only:
 /// - Local agents: union of (a) transcript files under ~/.cursor/projects/*/agent-transcripts/
@@ -8,16 +34,20 @@ import SQLite3
 ///   minutes while an agent works), so we use a 4-minute activity window.
 /// - Cloud agents: the IDE's cached cloud agent list in state.vscdb
 ///   (`cloudAgentRepository.agents`, status 1 = RUNNING, 4 = CREATING).
-/// - Needs input: `hasBlockingPendingActions` (recent tool approvals) or `hasPendingPlan`
-///   (plan finished and ready to build — no time limit, matches Cursor's needs-attention state).
+/// - Needs input: recent blocking tool approvals, or a verified unbuilt plan in
+///   `composer.planRegistry` linked to the composer (`hasPendingPlan`).
 @MainActor
 final class AgentMonitor: ObservableObject {
     @Published var localRunningCount = 0
     @Published var cloudRunningCount = 0
-    @Published var needsInput = false
+    @Published var agentsNeedingInput: [AgentNeedingInput] = []
 
     var totalRunning: Int {
         localRunningCount + cloudRunningCount
+    }
+
+    var needsInputCount: Int {
+        agentsNeedingInput.count
     }
 
     /// Activity within this window counts as "running". The IDE flushes agent state to disk
@@ -25,6 +55,8 @@ final class AgentMonitor: ObservableObject {
     private static let activityWindow: TimeInterval = 4 * 60
     /// Blocking tool approvals are only considered when the composer was active recently.
     private static let blockingActionWindow: TimeInterval = 30 * 60
+    /// Pending plans must have registry or composer activity within this window.
+    private static let pendingPlanWindow: TimeInterval = 7 * 24 * 60 * 60
     private static let pollInterval: TimeInterval = 15
 
     private var timer: Timer?
@@ -46,7 +78,7 @@ final class AgentMonitor: ObservableObject {
 
         localRunningCount = transcriptIDs.union(snapshot.activeLocalComposerIDs).count
         cloudRunningCount = snapshot.cloudRunning
-        needsInput = snapshot.needsInput
+        agentsNeedingInput = snapshot.agentsNeedingInput
     }
 
     // MARK: - Local transcripts
@@ -104,7 +136,7 @@ final class AgentMonitor: ObservableObject {
     private struct DatabaseSnapshot {
         var activeLocalComposerIDs: Set<String> = []
         var cloudRunning = 0
-        var needsInput = false
+        var agentsNeedingInput: [AgentNeedingInput] = []
     }
 
     private static func readDatabaseSnapshot() -> DatabaseSnapshot {
@@ -121,9 +153,17 @@ final class AgentMonitor: ObservableObject {
         if let data = readItem(database: database, key: "cloudAgentRepository.agents") {
             snapshot.cloudRunning = countRunningCloudAgents(data: data)
         }
+
+        let planRegistry = readItem(database: database, key: "composer.planRegistry")
+            .flatMap { data -> [String: Any]? in
+                try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            } ?? [:]
+
         if let data = readItem(database: database, key: "composer.composerHeaders") {
-            applyComposerHeaders(data: data, to: &snapshot)
+            applyComposerHeaders(data: data, planRegistry: planRegistry, to: &snapshot)
         }
+
+        snapshot.agentsNeedingInput.sort { $0.lastUpdatedAt > $1.lastUpdatedAt }
 
         return snapshot
     }
@@ -160,7 +200,11 @@ final class AgentMonitor: ObservableObject {
         }.count
     }
 
-    private static func applyComposerHeaders(data: Data, to snapshot: inout DatabaseSnapshot) {
+    private static func applyComposerHeaders(
+        data: Data,
+        planRegistry: [String: Any],
+        to snapshot: inout DatabaseSnapshot
+    ) {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let composers = root["allComposers"] as? [[String: Any]]
         else {
@@ -170,21 +214,34 @@ final class AgentMonitor: ObservableObject {
         let nowMs = Date().timeIntervalSince1970 * 1000
         let activityCutoff = nowMs - activityWindow * 1000
         let blockingCutoff = nowMs - blockingActionWindow * 1000
+        let pendingPlanCutoff = nowMs - pendingPlanWindow * 1000
 
         for composer in composers {
             let isArchived = composer["isArchived"] as? Bool ?? false
             let isDraft = composer["isDraft"] as? Bool ?? false
             guard !isArchived, !isDraft else { continue }
 
+            guard let composerID = composer["composerId"] as? String else { continue }
             let lastUpdatedAt = composer["lastUpdatedAt"] as? Double ?? 0
 
-            if composerNeedsInput(composer: composer, blockingCutoff: blockingCutoff) {
-                snapshot.needsInput = true
+            if let reason = composerNeedsInputReason(
+                composer: composer,
+                composerID: composerID,
+                planRegistry: planRegistry,
+                blockingCutoff: blockingCutoff,
+                pendingPlanCutoff: pendingPlanCutoff
+            ) {
+                snapshot.agentsNeedingInput.append(
+                    AgentNeedingInput(
+                        id: composerID,
+                        name: composerDisplayName(from: composer),
+                        reason: reason,
+                        lastUpdatedAt: lastUpdatedAt / 1000
+                    )
+                )
             }
 
-            if lastUpdatedAt > activityCutoff,
-               let composerID = composer["composerId"] as? String
-            {
+            if lastUpdatedAt > activityCutoff {
                 // Cloud-hosted chats are counted via the cloud agent cache instead.
                 let locationType = (composer["agentLocation"] as? [String: Any])?["type"] as? String
                 if locationType != "cloud" {
@@ -194,21 +251,95 @@ final class AgentMonitor: ObservableObject {
         }
     }
 
-    /// Returns true when the composer is waiting on the user — tool approval or a finished
-    /// plan ready to implement (`hasPendingPlan`, matching Cursor's needs-attention badge).
-    private static func composerNeedsInput(composer: [String: Any], blockingCutoff: Double) -> Bool {
-        // Plan ready for implementation — no time limit; stays until the user builds or dismisses.
-        if composer["hasPendingPlan"] as? Bool ?? false {
-            return true
+    private static func composerDisplayName(from composer: [String: Any]) -> String {
+        if let raw = composer["name"] as? String {
+            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty {
+                return name
+            }
+        }
+        return "Untitled agent"
+    }
+
+    private static func composerNeedsInputReason(
+        composer: [String: Any],
+        composerID: String,
+        planRegistry: [String: Any],
+        blockingCutoff: Double,
+        pendingPlanCutoff: Double
+    ) -> String? {
+        let lastUpdatedAt = composer["lastUpdatedAt"] as? Double ?? 0
+
+        if composer["hasPendingPlan"] as? Bool ?? false,
+           let planName = pendingPlanName(
+               forComposerID: composerID,
+               in: planRegistry,
+               pendingPlanCutoff: pendingPlanCutoff,
+               composerLastUpdatedAt: lastUpdatedAt
+           )
+        {
+            return "Plan ready to build: \(planName)"
         }
 
-        let lastUpdatedAt = composer["lastUpdatedAt"] as? Double ?? 0
         if lastUpdatedAt > blockingCutoff,
            composer["hasBlockingPendingActions"] as? Bool ?? false
         {
-            return true
+            return "Waiting for tool approval"
         }
 
-        return false
+        return nil
+    }
+
+    private static func pendingPlanName(
+        forComposerID composerID: String,
+        in planRegistry: [String: Any],
+        pendingPlanCutoff: Double,
+        composerLastUpdatedAt: Double
+    ) -> String? {
+        var newestName: String?
+        var newestUpdatedAt = pendingPlanCutoff
+
+        for (_, value) in planRegistry {
+            guard let entry = value as? [String: Any],
+                  planEntryIsUnbuilt(entry),
+                  planEntry(entry, referencesComposerID: composerID)
+            else {
+                continue
+            }
+
+            let planUpdatedAt = entry["lastUpdatedAt"] as? Double ?? 0
+            let relevantUpdatedAt = max(planUpdatedAt, composerLastUpdatedAt)
+            guard relevantUpdatedAt > pendingPlanCutoff else { continue }
+
+            if relevantUpdatedAt >= newestUpdatedAt {
+                newestUpdatedAt = relevantUpdatedAt
+                newestName = entry["name"] as? String
+            }
+        }
+
+        return newestName
+    }
+
+    private static func planEntryIsUnbuilt(_ entry: [String: Any]) -> Bool {
+        guard let builtBy = entry["builtBy"] as? [String: Any] else { return true }
+        return builtBy.isEmpty
+    }
+
+    private static func linkedComposerIDs(from entry: [String: Any]) -> Set<String> {
+        var ids: Set<String> = []
+        if let createdBy = entry["createdBy"] as? String {
+            ids.insert(createdBy)
+        }
+        if let referencedBy = entry["referencedBy"] as? [String] {
+            ids.formUnion(referencedBy)
+        }
+        if let editedBy = entry["editedBy"] as? [String] {
+            ids.formUnion(editedBy)
+        }
+        return ids
+    }
+
+    private static func planEntry(_ entry: [String: Any], referencesComposerID composerID: String) -> Bool {
+        linkedComposerIDs(from: entry).contains(composerID)
     }
 }

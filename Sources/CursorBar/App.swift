@@ -107,7 +107,7 @@ private struct MenuBarLabel: View {
             if showAgents {
                 MenuBarAgentBadge(
                     totalRunning: agents.totalRunning,
-                    needsInput: agents.needsInput
+                    needsInputCount: agents.needsInputCount
                 )
             }
             if showQuota {
@@ -144,20 +144,20 @@ private struct MenuBarLabel: View {
 
 private struct MenuBarAgentBadge: View {
     let totalRunning: Int
-    let needsInput: Bool
+    let needsInputCount: Int
 
     private var fillColor: Color {
-        if needsInput { return .yellow }
+        if needsInputCount > 0 { return .yellow }
         return totalRunning > 0 ? .green : .red
     }
 
     private var text: String {
-        if needsInput { return "?" }
-        return totalRunning > 9 ? "9+" : "\(totalRunning)"
+        let count = needsInputCount > 0 ? needsInputCount : totalRunning
+        return AgentMonitorFormatting.compactCount(count)
     }
 
     private var textColor: Color {
-        needsInput ? .black : .white
+        needsInputCount > 0 ? .black : .white
     }
 
     var body: some View {
@@ -309,10 +309,36 @@ private struct MenuContentView: View {
             }
             .font(.caption)
 
-            if agents.needsInput {
-                Label("An agent needs your input or a plan is ready to build", systemImage: "questionmark.circle.fill")
-                    .font(.caption)
+            if !agents.agentsNeedingInput.isEmpty {
+                Text("Needs input")
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.yellow)
+                    .padding(.top, 2)
+
+                ForEach(agents.agentsNeedingInput) { agent in
+                    Button {
+                        agent.openInCursor()
+                    } label: {
+                        HStack(alignment: .top, spacing: 6) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(agent.name)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                Text(agent.reason)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                            Spacer(minLength: 4)
+                            Image(systemName: "arrow.up.forward.square")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open in Cursor")
+                }
             }
         }
     }

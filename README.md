@@ -8,7 +8,7 @@ No browser tab, no manual cookie paste — CursorBar reads your session from the
 
 ## Features
 
-- **Agents badge** — circular indicator to the left of the quota gauge showing live agent count (local + cloud): green with count when running, yellow `?` when an agent needs your input or a plan is ready to build, red `0` when idle
+- **Agents badge** — circular indicator to the left of the quota gauge showing live agent count (local + cloud): green with count when running, yellow with count when agents need your input (tool approval or plan ready to build), red `0` when idle; dropdown lists agents needing input and opens them in Cursor when clicked
 - **Menu bar gauges** — quota gauge (`Q`) and daily utilization gauge (`D`), plus a red overspend amount when overspending
 - **Configurable menu bar** — toggle each element (agents, quota, daily utilization, overspend) via the gear button in the dropdown
 - **Daily utilization** — today's spend measured against a daily budget (total quota / working days in the billing cycle)
@@ -77,10 +77,10 @@ bash scripts/launch.sh
 **Agents badge** (left of the gauges):
 
 - Green with a number — that many agents are running (local + cloud)
-- Yellow `?` — an agent needs your input (tool approval) or finished a plan and is waiting for you to build it
+- Yellow with a number — that many agents need your input (tool approval or plan ready to build)
 - Red `0` — no agents running
 
-Agent status is read from local Cursor IDE data (transcripts and `state.vscdb`). Cloud agent status and plan/input flags can lag the UI by a minute or two because the IDE debounces writes to disk.
+Agent status is read from local Cursor IDE data (transcripts and `state.vscdb`). Cloud agent status and plan/input flags can lag the UI by a minute or two because the IDE debounces writes to disk. Click an agent under **Needs input** to focus it in the Cursor app.
 
 **Color in dropdown** (progress bar and percentage):
 
