@@ -9,6 +9,7 @@ No browser tab, no manual cookie paste — CursorBar reads your session from the
 ## Features
 
 - **Menu bar gauges** — quota gauge (`Q`) and daily utilization gauge (`D`), plus a red overspend amount when overspending
+- **Configurable menu bar** — toggle each element (quota, daily utilization, overspend) via the gear button in the dropdown
 - **Daily utilization** — today's spend measured against a daily budget (total quota / working days in the billing cycle)
 - **Usage breakdown** — dollar amounts used, total credits (including bonus), and remaining balance
 - **Overspend tracking** — shows charges beyond included credits and on-demand spend with budget/remaining

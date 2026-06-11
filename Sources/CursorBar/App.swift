@@ -66,13 +66,24 @@ struct CursorBarApp: App {
     }
 }
 
+enum MenuBarPrefs {
+    static let showQuotaKey = "menuBarShowQuota"
+    static let showDailyKey = "menuBarShowDaily"
+    static let showOverspendKey = "menuBarShowOverspend"
+}
+
 private struct MenuBarLabel: View {
     @ObservedObject var store: UsageStore
+    @AppStorage(MenuBarPrefs.showQuotaKey) private var showQuota = true
+    @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = true
+    @AppStorage(MenuBarPrefs.showOverspendKey) private var showOverspend = true
 
     var body: some View {
         if store.summary == nil {
             Text(store.menuBarLabel)
                 .monospacedDigit()
+        } else if !hasVisibleContent {
+            Image(systemName: "chart.bar.fill")
         } else if let image = renderedImage {
             Image(nsImage: image)
         } else {
@@ -81,23 +92,31 @@ private struct MenuBarLabel: View {
         }
     }
 
+    private var hasVisibleContent: Bool {
+        showQuota || showDaily || (showOverspend && store.hasOverspend)
+    }
+
     private var renderedImage: NSImage? {
         let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
 
         let content = HStack(spacing: 5) {
-            MenuBarGauge(
-                label: "Q",
-                percent: store.includedPercentUsed,
-                fillColor: store.statusColor,
-                isDark: isDark
-            )
-            MenuBarGauge(
-                label: "D",
-                percent: store.dailyUtilizationPercent,
-                fillColor: store.dailyStatusColor,
-                isDark: isDark
-            )
-            if store.hasOverspend {
+            if showQuota {
+                MenuBarGauge(
+                    label: "Q",
+                    percent: store.includedPercentUsed,
+                    fillColor: store.statusColor,
+                    isDark: isDark
+                )
+            }
+            if showDaily {
+                MenuBarGauge(
+                    label: "D",
+                    percent: store.dailyUtilizationPercent,
+                    fillColor: store.dailyStatusColor,
+                    isDark: isDark
+                )
+            }
+            if showOverspend, store.hasOverspend {
                 Text(UsageStore.formatDollarsCompact(cents: store.overspendCents))
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundStyle(.red)
@@ -166,6 +185,10 @@ private struct MenuBarGauge: View {
 private struct MenuContentView: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var updater: UpdateChecker
+    @State private var showSettings = false
+    @AppStorage(MenuBarPrefs.showQuotaKey) private var showQuota = true
+    @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = true
+    @AppStorage(MenuBarPrefs.showOverspendKey) private var showOverspend = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -185,11 +208,29 @@ private struct MenuContentView: View {
                 updateSection
             }
 
+            if showSettings {
+                Divider()
+                settingsSection
+            }
+
             Divider()
             footer
         }
         .padding(14)
         .frame(width: 280)
+    }
+
+    private var settingsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Show in menu bar")
+                .font(.caption.weight(.medium))
+
+            Toggle("Quota gauge", isOn: $showQuota)
+            Toggle("Daily utilization gauge", isOn: $showDaily)
+            Toggle("Overspend amount", isOn: $showOverspend)
+        }
+        .toggleStyle(.checkbox)
+        .font(.caption)
     }
 
     @ViewBuilder
@@ -403,6 +444,14 @@ private struct MenuContentView: View {
                 .foregroundStyle(.secondary)
 
             Spacer()
+
+            Button {
+                showSettings.toggle()
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(.borderless)
+            .help("Menu bar settings")
 
             Button {
                 Task { await updater.checkForUpdates(announceResult: true) }
