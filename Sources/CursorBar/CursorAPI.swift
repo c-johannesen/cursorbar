@@ -55,8 +55,27 @@ struct UsageSummary: Decodable, Sendable {
     let individualUsage: IndividualUsage
 }
 
+struct UsageEventsPage: Decodable, Sendable {
+    let totalUsageEventsCount: Int
+    let usageEventsDisplay: [UsageEvent]
+}
+
+struct UsageEvent: Decodable, Sendable {
+    let chargedCents: Double?
+    let tokenUsage: TokenUsage?
+
+    struct TokenUsage: Decodable, Sendable {
+        let totalCents: Double?
+    }
+
+    var costCents: Double {
+        chargedCents ?? tokenUsage?.totalCents ?? 0
+    }
+}
+
 enum CursorAPI {
     private static let usageSummaryURL = URL(string: "https://cursor.com/api/usage-summary")!
+    private static let usageEventsURL = URL(string: "https://cursor.com/api/dashboard/get-filtered-usage-events")!
 
     static func fetchUsageSummary() async throws -> UsageSummary {
         var credentials = try TokenProvider.loadSessionCredentials()
@@ -66,6 +85,89 @@ enum CursorAPI {
         } catch CursorAPIError.notAuthenticated {
             credentials = try TokenProvider.loadSessionCredentials()
             return try await requestUsageSummary(credentials: credentials)
+        }
+    }
+
+    /// Sums the cost of all usage events since local midnight, in cents.
+    static func fetchTodaySpendCents() async throws -> Int {
+        var credentials = try TokenProvider.loadSessionCredentials()
+
+        do {
+            return try await requestTodaySpendCents(credentials: credentials)
+        } catch CursorAPIError.notAuthenticated {
+            credentials = try TokenProvider.loadSessionCredentials()
+            return try await requestTodaySpendCents(credentials: credentials)
+        }
+    }
+
+    private static func requestTodaySpendCents(credentials: SessionCredentials) async throws -> Int {
+        let startOfDay = Calendar.current.startOfDay(for: Date())
+        let startMs = String(Int(startOfDay.timeIntervalSince1970 * 1000))
+        let endMs = String(Int(Date().timeIntervalSince1970 * 1000))
+
+        let pageSize = 100
+        let maxPages = 10
+        var totalCents = 0.0
+        var page = 1
+
+        while page <= maxPages {
+            let result = try await requestUsageEventsPage(
+                credentials: credentials,
+                startMs: startMs,
+                endMs: endMs,
+                page: page,
+                pageSize: pageSize
+            )
+            totalCents += result.usageEventsDisplay.reduce(0) { $0 + $1.costCents }
+
+            if page * pageSize >= result.totalUsageEventsCount || result.usageEventsDisplay.isEmpty {
+                break
+            }
+            page += 1
+        }
+
+        return Int(totalCents.rounded())
+    }
+
+    private static func requestUsageEventsPage(
+        credentials: SessionCredentials,
+        startMs: String,
+        endMs: String,
+        page: Int,
+        pageSize: Int
+    ) async throws -> UsageEventsPage {
+        var request = URLRequest(url: usageEventsURL)
+        request.httpMethod = "POST"
+        request.setValue("WorkosCursorSessionToken=\(credentials.cookieValue)", forHTTPHeaderField: "Cookie")
+        request.setValue("https://cursor.com", forHTTPHeaderField: "Origin")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = [
+            "startDate": startMs,
+            "endDate": endMs,
+            "page": page,
+            "pageSize": pageSize,
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CursorAPIError.invalidResponse
+        }
+
+        switch httpResponse.statusCode {
+        case 200:
+            break
+        case 401:
+            throw CursorAPIError.notAuthenticated
+        default:
+            throw CursorAPIError.httpError(statusCode: httpResponse.statusCode)
+        }
+
+        do {
+            return try JSONDecoder().decode(UsageEventsPage.self, from: data)
+        } catch {
+            throw CursorAPIError.invalidResponse
         }
     }
 

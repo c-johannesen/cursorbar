@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 final class UsageStore: ObservableObject {
     @Published private(set) var summary: UsageSummary?
+    @Published private(set) var todaySpendCents: Int?
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
@@ -28,14 +29,15 @@ final class UsageStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+
+        // Daily spend is supplementary; failures here must not break the main display.
+        todaySpendCents = try? await CursorAPI.fetchTodaySpendCents()
     }
 
+    /// Plain-text fallback for the menu bar while data is unavailable.
     var menuBarLabel: String {
         if errorMessage != nil, summary == nil {
             return "!"
-        }
-        if hasOverspend {
-            return Self.formatDollarsCompact(cents: overspendCents)
         }
         guard let includedPercentUsed else {
             return isLoading ? "…" : "!"
@@ -120,6 +122,48 @@ final class UsageStore: ObservableObject {
 
     var hasOverspend: Bool {
         overspendCents > 0
+    }
+
+    /// Mon-Fri days between billing cycle start and end.
+    var workingDaysInCycle: Int? {
+        guard let start = billingCycleStartDate, let end = billingCycleEndDate, start < end else { return nil }
+        let calendar = Calendar.current
+        var count = 0
+        var day = calendar.startOfDay(for: start)
+        let lastDay = calendar.startOfDay(for: end)
+        while day < lastDay {
+            if !calendar.isDateInWeekend(day) {
+                count += 1
+            }
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+            day = next
+        }
+        return count > 0 ? count : nil
+    }
+
+    /// Total quota divided by working days in the billing cycle.
+    var dailyBudgetCents: Int? {
+        guard let totalCreditsCents, let workingDaysInCycle else { return nil }
+        return totalCreditsCents / workingDaysInCycle
+    }
+
+    /// Today's spend as a percentage of the daily budget. Can exceed 100%.
+    var dailyUtilizationPercent: Double? {
+        guard let todaySpendCents, let dailyBudgetCents, dailyBudgetCents > 0 else { return nil }
+        return Double(todaySpendCents) / Double(dailyBudgetCents) * 100.0
+    }
+
+    var dailyStatusColor: Color {
+        guard let dailyUtilizationPercent else {
+            return .secondary
+        }
+        if dailyUtilizationPercent > 100 {
+            return .red
+        }
+        if dailyUtilizationPercent >= 70 {
+            return .yellow
+        }
+        return .green
     }
 
     var billingCycleEndDate: Date? {

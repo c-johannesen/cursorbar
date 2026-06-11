@@ -60,10 +60,106 @@ struct CursorBarApp: App {
         MenuBarExtra {
             MenuContentView(store: store, updater: updater)
         } label: {
+            MenuBarLabel(store: store)
+        }
+        .menuBarExtraStyle(.window)
+    }
+}
+
+private struct MenuBarLabel: View {
+    @ObservedObject var store: UsageStore
+
+    var body: some View {
+        if store.summary == nil {
+            Text(store.menuBarLabel)
+                .monospacedDigit()
+        } else if let image = renderedImage {
+            Image(nsImage: image)
+        } else {
             Text(store.menuBarLabel)
                 .monospacedDigit()
         }
-        .menuBarExtraStyle(.window)
+    }
+
+    private var renderedImage: NSImage? {
+        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+
+        let content = HStack(spacing: 5) {
+            MenuBarGauge(
+                label: "Q",
+                percent: store.includedPercentUsed,
+                fillColor: store.statusColor,
+                isDark: isDark
+            )
+            MenuBarGauge(
+                label: "D",
+                percent: store.dailyUtilizationPercent,
+                fillColor: store.dailyStatusColor,
+                isDark: isDark
+            )
+            if store.hasOverspend {
+                Text(UsageStore.formatDollarsCompact(cents: store.overspendCents))
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.vertical, 1)
+
+        let renderer = ImageRenderer(content: content)
+        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        guard let image = renderer.nsImage else { return nil }
+        image.isTemplate = false
+        return image
+    }
+}
+
+private struct MenuBarGauge: View {
+    let label: String
+    let percent: Double?
+    let fillColor: Color
+    let isDark: Bool
+
+    private var textColor: Color {
+        isDark ? .white : .black
+    }
+
+    private var trackColor: Color {
+        isDark ? Color.white.opacity(0.2) : Color.black.opacity(0.12)
+    }
+
+    private var valueText: String {
+        guard let percent else { return "–" }
+        return "\(Int(percent.rounded()))%"
+    }
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(label)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(textColor.opacity(0.85))
+                .fixedSize()
+
+            ZStack {
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 3.5)
+                            .fill(trackColor)
+                        if let percent {
+                            RoundedRectangle(cornerRadius: 3.5)
+                                .fill(fillColor.opacity(0.85))
+                                .frame(width: max(geometry.size.width * min(percent / 100.0, 1), percent > 0 ? 4 : 0))
+                        }
+                    }
+                }
+
+                Text(valueText)
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(textColor)
+                    .shadow(color: isDark ? .black.opacity(0.4) : .white.opacity(0.4), radius: 0.5)
+            }
+            .frame(width: 38, height: 14)
+            .clipShape(RoundedRectangle(cornerRadius: 3.5))
+        }
     }
 }
 
@@ -177,6 +273,38 @@ private struct MenuContentView: View {
                             .foregroundStyle(remaining == 0 ? .red : .primary)
                     }
                     .font(.caption)
+                }
+            }
+        }
+
+        if let dailyPercent = store.dailyUtilizationPercent {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Daily utilization")
+                        .font(.subheadline.weight(.medium))
+                    Spacer()
+                    Text("\(Int(dailyPercent.rounded()))%")
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(store.dailyStatusColor)
+                }
+
+                ProgressView(value: min(max(dailyPercent / 100.0, 0), 1))
+                    .tint(store.dailyStatusColor)
+
+                if let todaySpend = store.todaySpendCents, let budget = store.dailyBudgetCents {
+                    HStack {
+                        Text("Today")
+                        Spacer()
+                        Text("\(UsageStore.formatDollars(cents: todaySpend)) / \(UsageStore.formatDollars(cents: budget))")
+                            .monospacedDigit()
+                    }
+                    .font(.caption)
+                }
+
+                if let workingDays = store.workingDaysInCycle {
+                    Text("Daily budget = quota / \(workingDays) working days")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
