@@ -49,16 +49,7 @@ final class UsageStore: ObservableObject {
         if hasOverspend {
             return .red
         }
-        guard let includedPercentUsed else {
-            return .secondary
-        }
-        if includedPercentUsed >= 90 {
-            return .red
-        }
-        if includedPercentUsed >= 70 {
-            return .yellow
-        }
-        return .green
+        return Self.statusColor(for: includedPercentUsed)
     }
 
     var planDisplayName: String {
@@ -87,6 +78,58 @@ final class UsageStore: ObservableObject {
     var includedPercentUsed: Double? {
         guard let percent = summary?.individualUsage.plan.totalPercentUsed else { return nil }
         return min(percent, 100)
+    }
+
+    /// Auto / composer usage as a percentage of its sub-limit.
+    var autoPercentUsed: Double? {
+        summary?.individualUsage.plan.autoPercentUsed
+    }
+
+    /// Named-model API usage as a percentage of its sub-limit.
+    var apiPercentUsed: Double? {
+        summary?.individualUsage.plan.apiPercentUsed
+    }
+
+    var apiUsedCreditsCents: Int? {
+        guard summary?.individualUsage.plan.enabled == true else { return nil }
+        return summary?.individualUsage.plan.used
+    }
+
+    var apiLimitCreditsCents: Int? {
+        guard summary?.individualUsage.plan.enabled == true else { return nil }
+        return summary?.individualUsage.plan.limit
+    }
+
+    /// Auto / composer spend inferred from total included usage minus API usage.
+    var autoUsedCreditsCents: Int? {
+        guard let totalUsed = includedUsedCreditsCents,
+              let apiUsed = apiUsedCreditsCents
+        else { return nil }
+        return max(totalUsed - apiUsed, 0)
+    }
+
+    /// Auto / composer sub-limit derived from used amount and auto percentage.
+    var autoLimitCreditsCents: Int? {
+        guard let autoUsed = autoUsedCreditsCents,
+              let percent = autoPercentUsed,
+              percent > 0
+        else { return nil }
+        return Int((Double(autoUsed) / (percent / 100.0)).rounded())
+    }
+
+    var autoStatusColor: Color {
+        Self.statusColor(for: autoPercentUsed)
+    }
+
+    var apiStatusColor: Color {
+        Self.statusColor(for: apiPercentUsed)
+    }
+
+    static func statusColor(for percent: Double?) -> Color {
+        guard let percent else { return .secondary }
+        if percent >= 90 { return .red }
+        if percent >= 70 { return .yellow }
+        return .green
     }
 
     var includedRemainingCreditsCents: Int? {
@@ -154,15 +197,9 @@ final class UsageStore: ObservableObject {
     }
 
     var dailyStatusColor: Color {
-        guard let dailyUtilizationPercent else {
-            return .secondary
-        }
-        if dailyUtilizationPercent > 100 {
-            return .red
-        }
-        if dailyUtilizationPercent >= 70 {
-            return .yellow
-        }
+        guard let dailyUtilizationPercent else { return .secondary }
+        if dailyUtilizationPercent > 100 { return .red }
+        if dailyUtilizationPercent >= 70 { return .yellow }
         return .green
     }
 
