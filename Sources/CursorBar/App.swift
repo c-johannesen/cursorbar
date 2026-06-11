@@ -55,12 +55,13 @@ struct CursorBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = UsageStore()
     @StateObject private var updater = UpdateChecker()
+    @StateObject private var agents = AgentMonitor()
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContentView(store: store, updater: updater)
+            MenuContentView(store: store, updater: updater, agents: agents)
         } label: {
-            MenuBarLabel(store: store)
+            MenuBarLabel(store: store, agents: agents)
         }
         .menuBarExtraStyle(.window)
     }
@@ -70,13 +71,16 @@ enum MenuBarPrefs {
     static let showQuotaKey = "menuBarShowQuota"
     static let showDailyKey = "menuBarShowDaily"
     static let showOverspendKey = "menuBarShowOverspend"
+    static let showAgentsKey = "menuBarShowAgents"
 }
 
 private struct MenuBarLabel: View {
     @ObservedObject var store: UsageStore
+    @ObservedObject var agents: AgentMonitor
     @AppStorage(MenuBarPrefs.showQuotaKey) private var showQuota = true
     @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = true
     @AppStorage(MenuBarPrefs.showOverspendKey) private var showOverspend = true
+    @AppStorage(MenuBarPrefs.showAgentsKey) private var showAgents = true
 
     var body: some View {
         if store.summary == nil {
@@ -93,13 +97,19 @@ private struct MenuBarLabel: View {
     }
 
     private var hasVisibleContent: Bool {
-        showQuota || showDaily || (showOverspend && store.hasOverspend)
+        showAgents || showQuota || showDaily || (showOverspend && store.hasOverspend)
     }
 
     private var renderedImage: NSImage? {
         let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
 
         let content = HStack(spacing: 5) {
+            if showAgents {
+                MenuBarAgentBadge(
+                    totalRunning: agents.totalRunning,
+                    needsInput: agents.needsInput
+                )
+            }
             if showQuota {
                 MenuBarGauge(
                     label: "Q",
@@ -129,6 +139,37 @@ private struct MenuBarLabel: View {
         guard let image = renderer.nsImage else { return nil }
         image.isTemplate = false
         return image
+    }
+}
+
+private struct MenuBarAgentBadge: View {
+    let totalRunning: Int
+    let needsInput: Bool
+
+    private var fillColor: Color {
+        if needsInput { return .yellow }
+        return totalRunning > 0 ? .green : .red
+    }
+
+    private var text: String {
+        if needsInput { return "?" }
+        return totalRunning > 9 ? "9+" : "\(totalRunning)"
+    }
+
+    private var textColor: Color {
+        needsInput ? .black : .white
+    }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(fillColor.opacity(0.9))
+            Text(text)
+                .font(.system(size: text.count > 1 ? 8 : 9.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(textColor)
+                .fixedSize()
+        }
+        .frame(width: 14, height: 14)
     }
 }
 
@@ -185,14 +226,19 @@ private struct MenuBarGauge: View {
 private struct MenuContentView: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var updater: UpdateChecker
+    @ObservedObject var agents: AgentMonitor
     @State private var showSettings = false
     @AppStorage(MenuBarPrefs.showQuotaKey) private var showQuota = true
     @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = true
     @AppStorage(MenuBarPrefs.showOverspendKey) private var showOverspend = true
+    @AppStorage(MenuBarPrefs.showAgentsKey) private var showAgents = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            Divider()
+
+            agentsSection
             Divider()
 
             if let errorMessage = store.errorMessage, store.summary == nil {
@@ -225,12 +271,50 @@ private struct MenuContentView: View {
             Text("Show in menu bar")
                 .font(.caption.weight(.medium))
 
+            Toggle("Agents badge", isOn: $showAgents)
             Toggle("Quota gauge", isOn: $showQuota)
             Toggle("Daily utilization gauge", isOn: $showDaily)
             Toggle("Overspend amount", isOn: $showOverspend)
         }
         .toggleStyle(.checkbox)
         .font(.caption)
+    }
+
+    private var agentsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Agents")
+                    .font(.subheadline.weight(.medium))
+                Spacer()
+                Text("\(agents.totalRunning) running")
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(agents.totalRunning > 0 ? .green : .secondary)
+            }
+
+            HStack {
+                Text("Local")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(agents.localRunningCount)")
+                    .monospacedDigit()
+            }
+            .font(.caption)
+
+            HStack {
+                Text("Cloud")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(agents.cloudRunningCount)")
+                    .monospacedDigit()
+            }
+            .font(.caption)
+
+            if agents.needsInput {
+                Label("An agent needs your input or a plan is ready to build", systemImage: "questionmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.yellow)
+            }
+        }
     }
 
     @ViewBuilder

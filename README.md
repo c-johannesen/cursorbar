@@ -8,8 +8,9 @@ No browser tab, no manual cookie paste — CursorBar reads your session from the
 
 ## Features
 
+- **Agents badge** — circular indicator to the left of the quota gauge showing live agent count (local + cloud): green with count when running, yellow `?` when an agent needs your input or a plan is ready to build, red `0` when idle
 - **Menu bar gauges** — quota gauge (`Q`) and daily utilization gauge (`D`), plus a red overspend amount when overspending
-- **Configurable menu bar** — toggle each element (quota, daily utilization, overspend) via the gear button in the dropdown
+- **Configurable menu bar** — toggle each element (agents, quota, daily utilization, overspend) via the gear button in the dropdown
 - **Daily utilization** — today's spend measured against a daily budget (total quota / working days in the billing cycle)
 - **Usage breakdown** — dollar amounts used, total credits (including bonus), and remaining balance
 - **Overspend tracking** — shows charges beyond included credits and on-demand spend with budget/remaining
@@ -71,7 +72,15 @@ bash scripts/launch.sh
 
 | Menu bar | Click to open dropdown |
 |----------|------------------------|
-| `42%` | Plan name, billing dates, progress bar, used/remaining dollars, refresh & quit |
+| `[1] Q 42% D 85%` | Agents badge, quota/daily gauges, overspend (when applicable), plan details, refresh & quit |
+
+**Agents badge** (left of the gauges):
+
+- Green with a number — that many agents are running (local + cloud)
+- Yellow `?` — an agent needs your input (tool approval) or finished a plan and is waiting for you to build it
+- Red `0` — no agents running
+
+Agent status is read from local Cursor IDE data (transcripts and `state.vscdb`). Cloud agent status and plan/input flags can lag the UI by a minute or two because the IDE debounces writes to disk.
 
 **Color in dropdown** (progress bar and percentage):
 
@@ -132,9 +141,11 @@ Project layout:
 ```
 Sources/CursorBar/
   App.swift           # MenuBarExtra UI
+  AgentMonitor.swift  # Live agent count & needs-input detection
   TokenProvider.swift # Read auth from Cursor IDE DB
   CursorAPI.swift     # Fetch usage-summary
   UsageStore.swift    # Refresh timer & display state
+  UpdateChecker.swift # GitHub release updates
 scripts/
   install.sh          # One-step install
   launch.sh           # Start the app
@@ -144,6 +155,7 @@ scripts/
 ## Limitations
 
 - Uses Cursor's **undocumented** dashboard API — may break without notice
+- Agent status is inferred from local IDE files — may lag the UI or miss edge cases
 - Individual Cursor accounts only (reads your local IDE session)
 - Not signed with an Apple Developer ID — first launch may require right-click → Open, or use `scripts/launch.sh`
 
