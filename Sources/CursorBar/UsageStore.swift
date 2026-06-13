@@ -167,6 +167,17 @@ final class UsageStore: ObservableObject {
         overspendCents > 0
     }
 
+    static let minimumApiCreditsCents = 40_000
+    static let minimumAutoCreditsCents = 20_000
+
+    /// Quota used for daily budget pacing, floored at known API + auto minimums.
+    var dailyQuotaCents: Int? {
+        let baseTotal = totalCreditsCents ?? 0
+        let apiFloor = max(apiLimitCreditsCents ?? 0, Self.minimumApiCreditsCents)
+        let autoFloor = max(autoLimitCreditsCents ?? 0, Self.minimumAutoCreditsCents)
+        return max(baseTotal, apiFloor + autoFloor)
+    }
+
     /// Mon-Fri days between billing cycle start and end.
     var workingDaysInCycle: Int? {
         guard let start = billingCycleStartDate, let end = billingCycleEndDate, start < end else { return nil }
@@ -184,10 +195,10 @@ final class UsageStore: ObservableObject {
         return count > 0 ? count : nil
     }
 
-    /// Total quota divided by working days in the billing cycle.
+    /// Daily quota divided by working days in the billing cycle.
     var dailyBudgetCents: Int? {
-        guard let totalCreditsCents, let workingDaysInCycle else { return nil }
-        return totalCreditsCents / workingDaysInCycle
+        guard let dailyQuotaCents, let workingDaysInCycle else { return nil }
+        return dailyQuotaCents / workingDaysInCycle
     }
 
     /// Today's spend as a percentage of the daily budget. Can exceed 100%.
