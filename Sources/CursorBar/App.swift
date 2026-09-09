@@ -1,4 +1,5 @@
 import AppKit
+import PaceCore
 import SwiftUI
 
 @main
@@ -72,6 +73,8 @@ struct CursorBarApp: App {
 
 enum MenuBarPrefs {
     static let showQuotaKey = "menuBarShowQuota"
+    static let showAutoPaceKey = "menuBarShowAutoPace"
+    static let showApiPaceKey = "menuBarShowApiPace"
     static let showDailyKey = "menuBarShowDaily"
     static let showOverspendKey = "menuBarShowOverspend"
     static let showAgentsKey = "menuBarShowAgents"
@@ -80,8 +83,10 @@ enum MenuBarPrefs {
 private struct MenuBarLabel: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var agents: AgentMonitor
-    @AppStorage(MenuBarPrefs.showQuotaKey) private var showQuota = true
-    @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = true
+    @AppStorage(MenuBarPrefs.showQuotaKey) private var showQuota = false
+    @AppStorage(MenuBarPrefs.showAutoPaceKey) private var showAutoPace = true
+    @AppStorage(MenuBarPrefs.showApiPaceKey) private var showApiPace = true
+    @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = false
     @AppStorage(MenuBarPrefs.showOverspendKey) private var showOverspend = true
     @AppStorage(MenuBarPrefs.showAgentsKey) private var showAgents = true
     @StateObject private var chrome = MenuBarChromeMonitor()
@@ -102,7 +107,12 @@ private struct MenuBarLabel: View {
     }
 
     private var hasVisibleContent: Bool {
-        showAgents || showQuota || showDaily || (showOverspend && store.hasOverspend)
+        showAgents
+            || showQuota
+            || showAutoPace
+            || showApiPace
+            || showDaily
+            || (showOverspend && store.hasOverspend)
     }
 
     private var renderedImage: NSImage? {
@@ -120,6 +130,22 @@ private struct MenuBarLabel: View {
                     percent: store.quotaPercentUsed,
                     fillColor: store.statusColor,
                     isDark: isDark
+                )
+            }
+            if showAutoPace {
+                MenuBarBarGauge(
+                    percent: store.autoDailyUtilizationPercentForDisplay,
+                    fillColor: store.autoDailyStatusColor,
+                    isDark: isDark,
+                    prefix: "A"
+                )
+            }
+            if showApiPace {
+                MenuBarBarGauge(
+                    percent: store.apiDailyUtilizationPercentForDisplay,
+                    fillColor: store.apiDailyStatusColor,
+                    isDark: isDark,
+                    prefix: "P"
                 )
             }
             if showDaily {
@@ -228,6 +254,7 @@ private struct MenuBarBarGauge: View {
     let percent: Double?
     let fillColor: Color
     let isDark: Bool
+    var prefix: String? = nil
 
     private var textColor: Color {
         isDark ? .white : .black
@@ -238,30 +265,43 @@ private struct MenuBarBarGauge: View {
     }
 
     private var valueText: String {
-        guard let percent else { return "–" }
-        return "\(Int(percent.rounded()))%"
+        let body: String
+        if let percent {
+            body = "\(Int(percent.rounded()))%"
+        } else {
+            body = "–"
+        }
+        if let prefix {
+            return "\(prefix)\(body)"
+        }
+        return body
+    }
+
+    private var width: CGFloat {
+        prefix == nil ? 38 : 46
     }
 
     var body: some View {
+        // No GeometryReader: ImageRenderer gives it a zero proposed size, so a
+        // 0% fill made the whole Daily/A/P strip collapse.
         ZStack {
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(trackColor)
+            HStack(spacing: 0) {
+                let fillWidth = MenuBarBarFill.width(percent: percent, in: width)
+                if fillWidth > 0 {
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(trackColor)
-                    if let percent {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(fillColor.opacity(0.85))
-                            .frame(width: max(geometry.size.width * min(percent / 100.0, 1), percent > 0 ? 4 : 0))
-                    }
+                        .fill(fillColor.opacity(0.85))
+                        .frame(width: fillWidth)
                 }
+                Spacer(minLength: 0)
             }
-
             Text(valueText)
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .font(.system(size: prefix == nil ? 9 : 8, weight: .semibold, design: .monospaced))
                 .foregroundStyle(textColor)
                 .shadow(color: isDark ? .black.opacity(0.4) : .white.opacity(0.4), radius: 0.5)
         }
-        .frame(width: 38, height: 16)
+        .frame(width: width, height: 16)
         .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 }
@@ -272,12 +312,11 @@ private struct UsageMeterView: View {
     let color: Color
     var usedCents: Int?
     var limitCents: Int?
-    var remainingCents: Int?
-    var usedLabel: String = "Used"
-    var footnote: String?
+    /// Nested under a parent total meter (Auto/API under Included or Daily).
+    var indented: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
                 Text(title)
                     .font(.caption.weight(.medium))
@@ -295,29 +334,14 @@ private struct UsageMeterView: View {
                     .frame(width: 30, alignment: .trailing)
             }
 
-            if let detailText = detailText {
-                Text(detailText)
+            if let usedCents, let limitCents {
+                Text("\(UsageStore.formatDollars(cents: usedCents)) / \(UsageStore.formatDollars(cents: limitCents))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
-
-            if let footnote {
-                Text(footnote)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
         }
-    }
-
-    private var detailText: String? {
-        guard let usedCents, let limitCents else { return nil }
-
-        var text = "\(usedLabel) \(UsageStore.formatDollars(cents: usedCents)) / \(UsageStore.formatDollars(cents: limitCents))"
-        if let remainingCents {
-            text += " · \(UsageStore.formatDollars(cents: remainingCents)) left"
-        }
-        return text
+        .padding(.leading, indented ? 12 : 0)
     }
 }
 
@@ -326,13 +350,15 @@ private struct MenuContentView: View {
     @ObservedObject var updater: UpdateChecker
     @ObservedObject var agents: AgentMonitor
     @State private var showSettings = false
-    @AppStorage(MenuBarPrefs.showQuotaKey) private var showQuota = true
-    @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = true
+    @AppStorage(MenuBarPrefs.showQuotaKey) private var showQuota = false
+    @AppStorage(MenuBarPrefs.showAutoPaceKey) private var showAutoPace = true
+    @AppStorage(MenuBarPrefs.showApiPaceKey) private var showApiPace = true
+    @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = false
     @AppStorage(MenuBarPrefs.showOverspendKey) private var showOverspend = true
     @AppStorage(MenuBarPrefs.showAgentsKey) private var showAgents = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             header
             Divider()
 
@@ -371,7 +397,9 @@ private struct MenuContentView: View {
 
             Toggle("Agents badge", isOn: $showAgents)
             Toggle("Quota gauge", isOn: $showQuota)
-            Toggle("Daily utilization gauge", isOn: $showDaily)
+            Toggle("Auto daily (A)", isOn: $showAutoPace)
+            Toggle("API daily (P)", isOn: $showApiPace)
+            Toggle("Daily total (mixed)", isOn: $showDaily)
             Toggle("Overspend amount", isOn: $showOverspend)
         }
         .toggleStyle(.checkbox)
@@ -488,20 +516,22 @@ private struct MenuContentView: View {
 
     @ViewBuilder
     private var usageSection: some View {
-        let hasBillingMeters = store.includedPercentUsed != nil
+        let hasIncludedBlock = store.includedPercentUsed != nil
             || store.cursorModelsPercentUsed != nil
             || store.otherModelsPercentUsed != nil
+        let hasDailyBlock = store.dailyUtilizationPercent != nil
+            || store.autoDailyUtilizationPercentForDisplay != nil
+            || store.apiDailyUtilizationPercentForDisplay != nil
 
-        if hasBillingMeters {
-            VStack(alignment: .leading, spacing: 10) {
+        if hasIncludedBlock {
+            VStack(alignment: .leading, spacing: 6) {
                 if let percentUsed = store.includedPercentUsed {
                     UsageMeterView(
                         title: "Included usage",
                         percent: percentUsed,
                         color: store.includedStatusColor,
                         usedCents: store.includedUsedCreditsCents,
-                        limitCents: store.includedLimitCreditsCents,
-                        remainingCents: store.includedRemainingCreditsCents
+                        limitCents: store.includedLimitCreditsCents
                     )
                 }
 
@@ -509,7 +539,8 @@ private struct MenuContentView: View {
                     UsageMeterView(
                         title: "Cursor Models",
                         percent: cursorModelsPercent,
-                        color: store.cursorModelsStatusColor
+                        color: store.cursorModelsStatusColor,
+                        indented: true
                     )
                 }
 
@@ -519,26 +550,54 @@ private struct MenuContentView: View {
                         percent: otherModelsPercent,
                         color: store.otherModelsStatusColor,
                         usedCents: store.otherModelsUsedCreditsCents,
-                        limitCents: store.otherModelsLimitCreditsCents
+                        limitCents: store.otherModelsLimitCreditsCents,
+                        indented: true
                     )
                 }
             }
         }
 
-        if hasBillingMeters, store.dailyUtilizationPercent != nil {
+        if hasIncludedBlock, hasDailyBlock {
             Divider()
         }
 
-        if let dailyPercent = store.dailyUtilizationPercent {
-            UsageMeterView(
-                title: "Daily utilization",
-                percent: dailyPercent,
-                color: store.dailyStatusColor,
-                usedCents: store.todaySpendCents,
-                limitCents: store.dailyBudgetCents,
-                usedLabel: "Today",
-                footnote: store.workingDaysInCycle.map { "Daily budget = quota / \($0) working days" }
-            )
+        if hasDailyBlock {
+            VStack(alignment: .leading, spacing: 6) {
+                if let dailyPercent = store.dailyUtilizationPercent {
+                    UsageMeterView(
+                        title: "Daily",
+                        percent: dailyPercent,
+                        color: store.dailyStatusColor,
+                        usedCents: store.todaySpendCents,
+                        limitCents: store.dailyBudgetCents
+                    )
+                } else {
+                    Text("Daily")
+                        .font(.caption.weight(.medium))
+                }
+
+                if let autoPct = store.autoDailyUtilizationPercentForDisplay {
+                    UsageMeterView(
+                        title: "Auto daily",
+                        percent: autoPct,
+                        color: store.autoDailyStatusColor,
+                        usedCents: store.todayAutoSpendCents,
+                        limitCents: store.autoDailyBudgetCents,
+                        indented: true
+                    )
+                }
+
+                if let apiPct = store.apiDailyUtilizationPercentForDisplay {
+                    UsageMeterView(
+                        title: "API daily",
+                        percent: apiPct,
+                        color: store.apiDailyStatusColor,
+                        usedCents: store.todayApiSpendCents,
+                        limitCents: store.apiDailyBudgetCents,
+                        indented: true
+                    )
+                }
+            }
         }
 
         if store.hasOverspend {
@@ -629,12 +688,12 @@ private struct MenuContentView: View {
     }
 
     private var footer: some View {
-        HStack {
+        HStack(alignment: .center, spacing: 8) {
             Text("Updated \(store.lastUpdatedText) · v\(UpdateChecker.currentVersion)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-
-            Spacer()
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             Button {
                 showSettings.toggle()

@@ -1,10 +1,11 @@
 import Foundation
 import SwiftUI
+import PaceCore
 
 @MainActor
 final class UsageStore: ObservableObject {
     @Published private(set) var summary: UsageSummary?
-    @Published private(set) var todaySpendCents: Int?
+    @Published private(set) var todaySpend: TodaySpend?
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
@@ -31,12 +32,17 @@ final class UsageStore: ObservableObject {
         }
 
         // Daily spend is supplementary; failures here must not break the main display.
-        todaySpendCents = try? await CursorAPI.fetchTodaySpendCents(cycleStart: billingCycleStartDate)
+        todaySpend = try? await CursorAPI.fetchTodaySpend(cycleStart: billingCycleStartDate)
         if let cycleStart = billingCycleStartDate,
            Calendar.current.isDate(Date(), inSameDayAs: cycleStart),
            let includedUsed = includedUsedCreditsCents
         {
-            todaySpendCents = includedUsed
+            let split = todaySpend
+            todaySpend = TodaySpend(
+                totalCents: includedUsed,
+                autoCents: split?.autoCents ?? 0,
+                apiCents: split?.apiCents ?? 0
+            )
         }
     }
 
@@ -112,6 +118,34 @@ final class UsageStore: ObservableObject {
         Self.statusColor(for: otherModelsPercentUsed)
     }
 
+    var otherModelsRemainingCreditsCents: Int? {
+        guard let limit = otherModelsLimitCreditsCents, let used = otherModelsUsedCreditsCents else { return nil }
+        return max(limit - used, 0)
+    }
+
+    /// Individual plans only. Upstream does not expose a Cursor Models dollar cap;
+    /// daily Auto budget still needs remaining $ = included − Other Models.
+    var cursorModelsLimitCreditsCents: Int? {
+        guard summary?.appliesIndividualCreditFloors == true,
+              let included = includedLimitCreditsCents,
+              let other = otherModelsLimitCreditsCents
+        else { return nil }
+        return max(included - other, UsageCredits.minimumCursorModelsIncludedCents)
+    }
+
+    var cursorModelsUsedCreditsCents: Int? {
+        guard let limit = cursorModelsLimitCreditsCents, let percent = cursorModelsPercentUsed else { return nil }
+        return Int((Double(limit) * percent / 100.0).rounded())
+    }
+
+    var cursorModelsRemainingCreditsCents: Int? {
+        guard let limit = cursorModelsLimitCreditsCents, let used = cursorModelsUsedCreditsCents else { return nil }
+        return max(limit - used, 0)
+    }
+
+    var apiRemainingCreditsCents: Int? { otherModelsRemainingCreditsCents }
+    var autoRemainingCreditsCents: Int? { cursorModelsRemainingCreditsCents }
+
     var includedStatusColor: Color {
         Self.statusColor(for: includedPercentUsed)
     }
@@ -161,30 +195,130 @@ final class UsageStore: ObservableObject {
     /// Mon-Fri days between billing cycle start and end.
     var workingDaysInCycle: Int? {
         guard let start = billingCycleStartDate, let end = billingCycleEndDate, start < end else { return nil }
-        let calendar = Calendar.current
-        var count = 0
-        var day = calendar.startOfDay(for: start)
-        let lastDay = calendar.startOfDay(for: end)
-        while day < lastDay {
-            if !calendar.isDateInWeekend(day) {
-                count += 1
-            }
-            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
-            day = next
-        }
+        let count = PaceCalculator.workingDays(from: start, to: end)
         return count > 0 ? count : nil
     }
 
-    /// Total quota divided by working days in the billing cycle.
+    /// Future workdays after today through billing cycle end (`[tomorrow, end)`).
+    var remainingWorkingDaysInCycle: Int? {
+        guard let end = billingCycleEndDate else { return nil }
+        let count = PaceCalculator.remainingWorkdays(now: Date(), cycleEnd: end)
+        return count
+    }
+
+    var autoDailyBudgetCents: Int? {
+        guard let remaining = autoRemainingCreditsCents,
+              let days = remainingWorkingDaysInCycle
+        else { return nil }
+        return PaceCalculator.dailyBudgetCents(remainingCents: remaining, remainingWorkdays: days)
+    }
+
+    var apiDailyBudgetCents: Int? {
+        guard let remaining = apiRemainingCreditsCents,
+              let days = remainingWorkingDaysInCycle
+        else { return nil }
+        return PaceCalculator.dailyBudgetCents(remainingCents: remaining, remainingWorkdays: days)
+    }
+
+    var todaySpendCents: Int? { todaySpend?.totalCents }
+    var todayAutoSpendCents: Int? { todaySpend?.autoCents }
+    var todayApiSpendCents: Int? { todaySpend?.apiCents }
+
+    var autoDailyUtilizationPercent: Double? {
+        PaceCalculator.dailyUtilizationPercent(
+            spendCents: todayAutoSpendCents,
+            dailyBudgetCents: autoDailyBudgetCents
+        )
+    }
+
+    var apiDailyUtilizationPercent: Double? {
+        PaceCalculator.dailyUtilizationPercent(
+            spendCents: todayApiSpendCents,
+            dailyBudgetCents: apiDailyBudgetCents
+        )
+    }
+
+    var apiDailyUtilizationPercentForDisplay: Double? {
+        if let pct = apiDailyUtilizationPercent { return pct }
+        if Self.isDepletedPoolWithBurn(budgetCents: apiDailyBudgetCents, spendCents: todayApiSpendCents) { return 100 }
+        return nil
+    }
+
+    var autoDailyUtilizationPercentForDisplay: Double? {
+        if let pct = autoDailyUtilizationPercent { return pct }
+        if Self.isDepletedPoolWithBurn(budgetCents: autoDailyBudgetCents, spendCents: todayAutoSpendCents) { return 100 }
+        return nil
+    }
+
+    /// Same thresholds as mixed daily: >100 red, ≥70 yellow.
+    static func poolDailyStatusColor(for percent: Double?) -> Color {
+        guard let percent else { return .secondary }
+        if percent > 100 { return .red }
+        if percent >= 70 { return .yellow }
+        return .green
+    }
+
+    var autoDailyStatusColor: Color {
+        if Self.isDepletedPoolWithBurn(budgetCents: autoDailyBudgetCents, spendCents: todayAutoSpendCents) { return .red }
+        return Self.poolDailyStatusColor(for: autoDailyUtilizationPercent)
+    }
+
+    var apiDailyStatusColor: Color {
+        if Self.isDepletedPoolWithBurn(budgetCents: apiDailyBudgetCents, spendCents: todayApiSpendCents) { return .red }
+        return Self.poolDailyStatusColor(for: apiDailyUtilizationPercent)
+    }
+
+    func dailyFootnote(poolLabel: String, remainingCents: Int?, budgetCents: Int?) -> String? {
+        guard let days = remainingWorkingDaysInCycle,
+              let remainingCents,
+              let budgetCents
+        else { return nil }
+        let rem = Self.formatDollars(cents: remainingCents)
+        let bud = Self.formatDollars(cents: budgetCents)
+        return "\(poolLabel) daily = \(rem) left ÷ \(max(days, 1)) workdays → \(bud)/day"
+    }
+
+    var autoDailyFootnote: String? {
+        if Self.isDepletedPoolWithBurn(budgetCents: autoDailyBudgetCents, spendCents: todayAutoSpendCents) {
+            return "$0/day left · pool exhausted"
+        }
+        return dailyFootnote(poolLabel: "Auto", remainingCents: autoRemainingCreditsCents, budgetCents: autoDailyBudgetCents)
+    }
+
+    var apiDailyFootnote: String? {
+        if Self.isDepletedPoolWithBurn(budgetCents: apiDailyBudgetCents, spendCents: todayApiSpendCents) {
+            return "$0/day left · pool exhausted"
+        }
+        return dailyFootnote(poolLabel: "API", remainingCents: apiRemainingCreditsCents, budgetCents: apiDailyBudgetCents)
+    }
+
+    private static func isDepletedPoolWithBurn(budgetCents: Int?, spendCents: Int?) -> Bool {
+        (budgetCents ?? -1) == 0 && (spendCents ?? 0) > 0
+    }
+
+    /// Included remaining redistributed across future workdays (same formula as Auto/API daily).
     var dailyBudgetCents: Int? {
-        guard let includedLimitCreditsCents, let workingDaysInCycle else { return nil }
-        return includedLimitCreditsCents / workingDaysInCycle
+        guard let remaining = includedRemainingCreditsCents,
+              let days = remainingWorkingDaysInCycle
+        else { return nil }
+        return PaceCalculator.dailyBudgetCents(remainingCents: remaining, remainingWorkdays: days)
+    }
+
+    var mixedDailyFootnote: String? {
+        dailyFootnote(
+            poolLabel: "Daily",
+            remainingCents: includedRemainingCreditsCents,
+            budgetCents: dailyBudgetCents
+        )
     }
 
     /// Today's spend as a percentage of the daily budget. Can exceed 100%.
+    /// Missing today-spend (events not in yet) is $0 so the Daily bar stays visible.
     var dailyUtilizationPercent: Double? {
-        guard let todaySpendCents, let dailyBudgetCents, dailyBudgetCents > 0 else { return nil }
-        return Double(todaySpendCents) / Double(dailyBudgetCents) * 100.0
+        PaceCalculator.dailyUtilizationPercent(
+            spendCents: todaySpendCents,
+            dailyBudgetCents: dailyBudgetCents
+        )
     }
 
     var dailyStatusColor: Color {
