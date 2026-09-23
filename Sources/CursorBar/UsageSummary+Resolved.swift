@@ -44,22 +44,36 @@ extension UsageSummary {
     }
 
     /// Cursor Models pool (Auto, Composer, Cursor Grok). `autoPercentUsed` on the wire.
+    /// The display-message fallback only applies when there's no `overall` (Enterprise/team
+    /// aggregate) usage either: on those contracts the message is generic boilerplate
+    /// ("You've used 0% of your included total usage") rather than a real per-pool figure.
     var cursorModelsPercentUsed: Double? {
         if isUnlimitedPlan { return nil }
-        return plan?.autoPercentUsed ?? Self.percent(fromDisplayMessage: autoModelSelectedDisplayMessage)
+        if let auto = plan?.autoPercentUsed { return auto }
+        guard overall == nil else { return nil }
+        return Self.percent(fromDisplayMessage: autoModelSelectedDisplayMessage)
     }
 
-    /// Other Models pool (named / third-party). `apiPercentUsed` on the wire.
+    /// Other Models pool (named / third-party). `apiPercentUsed` on the wire. See
+    /// `cursorModelsPercentUsed` for why the display-message fallback is skipped when
+    /// `overall` usage is present.
     var otherModelsPercentUsed: Double? {
         if isUnlimitedPlan { return nil }
-        return plan?.apiPercentUsed ?? Self.percent(fromDisplayMessage: namedModelSelectedDisplayMessage)
+        if let api = plan?.apiPercentUsed { return api }
+        guard overall == nil else { return nil }
+        return Self.percent(fromDisplayMessage: namedModelSelectedDisplayMessage)
     }
 
-    /// Blended included-usage percentage. Only from `totalPercentUsed` — the
-    /// display-message strings feed the Cursor Models / Other Models bars instead.
+    /// Blended included-usage percentage. Prefers `totalPercentUsed`, and falls back to
+    /// `overall.used / overall.limit` on Enterprise/team contracts that omit `plan` entirely
+    /// (and so never populate `totalPercentUsed`) but do report an aggregate `overall` figure.
     var includedPercentUsed: Double? {
         if isUnlimitedPlan { return nil }
-        return plan?.totalPercentUsed
+        if let total = plan?.totalPercentUsed { return total }
+        if let used = overall?.used, let limit = overall?.limit, limit > 0 {
+            return Double(used) / Double(limit) * 100.0
+        }
+        return nil
     }
 
     /// Amount used against the included pool. Prefer `breakdown.total` over `plan.used`:
