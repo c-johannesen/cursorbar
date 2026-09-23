@@ -85,6 +85,7 @@ enum MenuBarPrefs {
     static let showDailyKey = "menuBarShowDaily"
     static let showOverspendKey = "menuBarShowOverspend"
     static let showAgentsKey = "menuBarShowAgents"
+    static let showRemainingKey = "menuBarShowRemaining"
 }
 
 private struct MenuBarLabel: View {
@@ -94,6 +95,7 @@ private struct MenuBarLabel: View {
     @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = true
     @AppStorage(MenuBarPrefs.showOverspendKey) private var showOverspend = true
     @AppStorage(MenuBarPrefs.showAgentsKey) private var showAgents = true
+    @AppStorage(MenuBarPrefs.showRemainingKey) private var showRemaining = false
     @StateObject private var chrome = MenuBarChromeMonitor()
 
     var body: some View {
@@ -112,7 +114,9 @@ private struct MenuBarLabel: View {
     }
 
     private var hasVisibleContent: Bool {
-        showAgents || showQuota || showDaily || (showOverspend && store.hasOverspend)
+        showAgents || showQuota || showDaily
+            || (showOverspend && store.hasOverspend)
+            || (showRemaining && store.includedRemainingCreditsCents != nil)
     }
 
     private var renderedImage: NSImage? {
@@ -143,6 +147,11 @@ private struct MenuBarLabel: View {
                 Text(UsageStore.formatDollarsCompact(cents: store.overspendCents))
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundStyle(.red)
+            }
+            if showRemaining, let remaining = store.includedRemainingCreditsCents {
+                Text(UsageStore.formatDollarsCompact(cents: remaining))
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(store.statusColor)
             }
         }
         .padding(.vertical, 1)
@@ -355,6 +364,7 @@ private struct MenuContentView: View {
     @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = true
     @AppStorage(MenuBarPrefs.showOverspendKey) private var showOverspend = true
     @AppStorage(MenuBarPrefs.showAgentsKey) private var showAgents = true
+    @AppStorage(MenuBarPrefs.showRemainingKey) private var showRemaining = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -398,6 +408,7 @@ private struct MenuContentView: View {
             Toggle("Quota gauge", isOn: $showQuota)
             Toggle("Daily utilization gauge", isOn: $showDaily)
             Toggle("Overspend amount", isOn: $showOverspend)
+            Toggle("Remaining amount", isOn: $showRemaining)
         }
         .toggleStyle(.checkbox)
         .font(.caption)
