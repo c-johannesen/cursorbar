@@ -29,11 +29,15 @@ enum AgentMonitorFormatting {
 
 /// Monitors live Cursor agents using local data only:
 /// - Local agents: union of (a) transcript files under ~/.cursor/projects/*/agent-transcripts/
-///   with a recent mtime and (b) composers in state.vscdb (`composer.composerHeaders`) with a
-///   recent `lastUpdatedAt`. Both are flushed by the IDE on message boundaries (every 1-3
-///   minutes while an agent works), so we use a 4-minute activity window.
-/// - Cloud agents: the IDE's cached cloud agent list in state.vscdb
-///   (`cloudAgentRepository.agents`, status 1 = RUNNING, 4 = CREATING).
+///   with a recent mtime and (b) composers in state.vscdb with a recent `lastUpdatedAt`. Newer
+///   Cursor builds store composer headers in their own `composerHeaders` table (one JSON blob
+///   per row, in the `value` column) instead of the older single `composer.composerHeaders`
+///   JSON blob in `ItemTable`; both are read, table first. Both sources are flushed by the IDE
+///   on message boundaries (every 1-3 minutes while an agent works), so we use a 4-minute
+///   activity window.
+/// - Cloud agents: the IDE's cached cloud agent list in state.vscdb. Older builds store this
+///   under the flat key `cloudAgentRepository.agents`; newer builds namespace it per signed-in
+///   account as `cloudAgentRepository.agents.<accountId>`, so both are matched and summed.
 /// - Needs input: recent blocking tool approvals, or a verified unbuilt plan in
 ///   `composer.planRegistry` linked to the composer (`hasPendingPlan`).
 @MainActor
@@ -150,18 +154,15 @@ final class AgentMonitor: ObservableObject {
         }
         defer { sqlite3_close(database) }
 
-        if let data = readItem(database: database, key: "cloudAgentRepository.agents") {
-            snapshot.cloudRunning = countRunningCloudAgents(data: data)
-        }
+        snapshot.cloudRunning = readCloudAgentRunningCount(database: database)
 
         let planRegistry = readItem(database: database, key: "composer.planRegistry")
             .flatMap { data -> [String: Any]? in
                 try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             } ?? [:]
 
-        if let data = readItem(database: database, key: "composer.composerHeaders") {
-            applyComposerHeaders(data: data, planRegistry: planRegistry, to: &snapshot)
-        }
+        let composers = composerHeaderDicts(database: database)
+        applyComposerHeaders(composers: composers, planRegistry: planRegistry, to: &snapshot)
 
         snapshot.agentsNeedingInput.sort { $0.lastUpdatedAt > $1.lastUpdatedAt }
 
@@ -185,6 +186,72 @@ final class AgentMonitor: ObservableObject {
         return String(cString: cString).data(using: .utf8)
     }
 
+    /// Matches both the legacy flat key and newer per-account-namespaced keys
+    /// (`cloudAgentRepository.agents.<accountId>`), and sums running counts across all matches.
+    private static func readCloudAgentRunningCount(database: OpaquePointer?) -> Int {
+        let query = "SELECT value FROM ItemTable WHERE key = ?1 OR key LIKE ?2"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK else {
+            return 0
+        }
+        defer { sqlite3_finalize(statement) }
+
+        let exact = "cloudAgentRepository.agents"
+        let prefix = "cloudAgentRepository.agents.%"
+        sqlite3_bind_text(statement, 1, exact, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        sqlite3_bind_text(statement, 2, prefix, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+        var total = 0
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let cString = sqlite3_column_text(statement, 0),
+                  let data = String(cString: cString).data(using: .utf8)
+            else { continue }
+            total += countRunningCloudAgents(data: data)
+        }
+        return total
+    }
+
+    /// Reads local composer headers, preferring the newer dedicated `composerHeaders` table
+    /// (one row per composer, JSON in `value`) and falling back to the older single JSON blob
+    /// under the `composer.composerHeaders` key in `ItemTable` when the table doesn't exist or
+    /// is empty.
+    private static func composerHeaderDicts(database: OpaquePointer?) -> [[String: Any]] {
+        let fromTable = composerHeaderDictsFromTable(database: database)
+        if !fromTable.isEmpty {
+            return fromTable
+        }
+
+        guard let data = readItem(database: database, key: "composer.composerHeaders"),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let composers = root["allComposers"] as? [[String: Any]]
+        else {
+            return []
+        }
+        return composers
+    }
+
+    private static func composerHeaderDictsFromTable(database: OpaquePointer?) -> [[String: Any]] {
+        let query = "SELECT isArchived, value FROM composerHeaders"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var composers: [[String: Any]] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let isArchived = sqlite3_column_int(statement, 0) != 0
+            guard let cString = sqlite3_column_text(statement, 1),
+                  let data = String(cString: cString).data(using: .utf8),
+                  var composer = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { continue }
+            // The table's own `isArchived` column is authoritative; the JSON blob may omit it.
+            composer["isArchived"] = isArchived
+            composers.append(composer)
+        }
+        return composers
+    }
+
     private static func countRunningCloudAgents(data: Data) -> Int {
         guard let agents = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             return 0
@@ -201,16 +268,10 @@ final class AgentMonitor: ObservableObject {
     }
 
     private static func applyComposerHeaders(
-        data: Data,
+        composers: [[String: Any]],
         planRegistry: [String: Any],
         to snapshot: inout DatabaseSnapshot
     ) {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let composers = root["allComposers"] as? [[String: Any]]
-        else {
-            return
-        }
-
         let nowMs = Date().timeIntervalSince1970 * 1000
         let activityCutoff = nowMs - activityWindow * 1000
         let blockingCutoff = nowMs - blockingActionWindow * 1000
