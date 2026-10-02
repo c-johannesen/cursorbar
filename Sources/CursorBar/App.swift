@@ -57,6 +57,9 @@ enum CursorBarMain {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        guard LaunchAtLogin.wantsEnabled else { return }
+        let notice = LaunchAtLogin.sync()
+        NSLog("CursorBar open-at-login: \(notice ?? "enabled")")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -346,11 +349,50 @@ private struct UsageMeterView: View {
     }
 }
 
+/// MenuBarExtra keeps the last window height when the menu gets shorter and
+/// centers the smaller content, which leaves empty bands above and below.
+private struct MenuBarPanelSizer: NSViewRepresentable {
+    var height: CGFloat
+
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        let height = height
+        DispatchQueue.main.async {
+            guard height > 1, let window = nsView.window else { return }
+            let frame = window.frame
+            guard abs(frame.height - height) > 0.5 else { return }
+            window.setFrame(
+                NSRect(
+                    x: frame.origin.x,
+                    y: frame.maxY - height,
+                    width: frame.width,
+                    height: height
+                ),
+                display: true,
+                animate: false
+            )
+        }
+    }
+}
+
+private struct PanelHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 private struct MenuContentView: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var updater: UpdateChecker
     @ObservedObject var agents: AgentMonitor
     @State private var showSettings = false
+    @State private var openAtLogin = false
+    @State private var openAtLoginNotice: String?
+    @State private var panelHeight: CGFloat = 0
     @AppStorage(MenuBarPrefs.showQuotaKey) private var showQuota = true
     @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = true
     @AppStorage(MenuBarPrefs.showOverspendKey) private var showOverspend = true
@@ -382,17 +424,55 @@ private struct MenuContentView: View {
                 settingsSection
             }
 
+            if openAtLoginNotice != nil {
+                Divider()
+                openAtLoginNoticeSection
+            }
+
             Divider()
             footer
         }
         .padding(14)
         .frame(width: 280)
+        .fixedSize(horizontal: false, vertical: true)
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: PanelHeightKey.self, value: proxy.size.height)
+            }
+        }
+        .onPreferenceChange(PanelHeightKey.self) { panelHeight = $0 }
+        .background(MenuBarPanelSizer(height: panelHeight))
+        .onAppear {
+            refreshOpenAtLogin()
+        }
+    }
+
+    private var openAtLoginNoticeSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(openAtLoginNotice ?? "")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Open Login Items") {
+                LaunchAtLogin.openSystemSettings()
+            }
+            .font(.caption)
+        }
     }
 
     private var settingsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
+            Toggle("Open at login", isOn: Binding(
+                get: { openAtLogin },
+                set: { enabled in
+                    openAtLoginNotice = enabled ? LaunchAtLogin.enable() : LaunchAtLogin.disable()
+                    openAtLogin = LaunchAtLogin.wantsEnabled
+                }
+            ))
+
             Text("Show in menu bar")
                 .font(.caption.weight(.medium))
+                .padding(.top, 4)
 
             Toggle("Agents badge", isOn: $showAgents)
             Toggle("Quota gauge", isOn: $showQuota)
@@ -401,6 +481,11 @@ private struct MenuContentView: View {
         }
         .toggleStyle(.checkbox)
         .font(.caption)
+    }
+
+    private func refreshOpenAtLogin() {
+        openAtLoginNotice = LaunchAtLogin.sync()
+        openAtLogin = LaunchAtLogin.wantsEnabled
     }
 
     private var agentsSection: some View {
