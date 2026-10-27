@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PaceCore
 
 enum UpdateError: Error, LocalizedError {
     case requestFailed
@@ -7,6 +8,8 @@ enum UpdateError: Error, LocalizedError {
     case badArchive
     case notInstalledAsApp
     case processFailed
+    case unverifiedDownload
+    case checksumMismatch
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +23,10 @@ enum UpdateError: Error, LocalizedError {
             "CursorBar is not running from an app bundle."
         case .processFailed:
             "Update helper command failed."
+        case .unverifiedDownload:
+            "Release archive has no checksum, so it was not installed."
+        case .checksumMismatch:
+            "Downloaded archive did not match the release checksum."
         }
     }
 }
@@ -29,6 +36,7 @@ final class UpdateChecker: ObservableObject {
     struct Release {
         let version: String
         let zipURL: URL
+        let digest: String
     }
 
     @Published private(set) var availableUpdate: Release?
@@ -69,14 +77,20 @@ final class UpdateChecker: ObservableObject {
                 ? String(release.tagName.dropFirst())
                 : release.tagName
 
-            guard let asset = release.assets.first(where: { $0.name.hasSuffix(".zip") }),
-                  let zipURL = URL(string: asset.browserDownloadURL)
-            else {
+            let assets = release.assets.map {
+                ReleaseAsset(name: $0.name, downloadURL: $0.browserDownloadURL, digest: $0.digest)
+            }
+            guard assets.contains(where: Self.isCursorBarZip) else {
                 throw UpdateError.noAsset
+            }
+            guard let selected = ReleaseAssetPicker.selectCursorBarZip(assets),
+                  let zipURL = URL(string: selected.downloadURL)
+            else {
+                throw UpdateError.unverifiedDownload
             }
 
             if Self.isVersion(latestVersion, newerThan: Self.currentVersion) {
-                availableUpdate = Release(version: latestVersion, zipURL: zipURL)
+                availableUpdate = Release(version: latestVersion, zipURL: zipURL, digest: selected.digest)
             } else {
                 availableUpdate = nil
                 if announceResult {
@@ -102,6 +116,10 @@ final class UpdateChecker: ObservableObject {
             }
 
             let (tempZip, _) = try await URLSession.shared.download(from: update.zipURL)
+            let downloaded = try Data(contentsOf: tempZip)
+            guard ReleaseDigest.matches(data: downloaded, declared: update.digest) else {
+                throw UpdateError.checksumMismatch
+            }
             let extractDir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("cursorbar-update-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
@@ -141,6 +159,11 @@ final class UpdateChecker: ObservableObject {
         return false
     }
 
+    private static func isCursorBarZip(_ asset: ReleaseAsset) -> Bool {
+        let name = asset.name.lowercased()
+        return name.hasSuffix(".zip") && name.contains("cursorbar")
+    }
+
     private static func runProcess(_ executable: String, _ arguments: [String]) async throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -164,10 +187,12 @@ private struct GitHubRelease: Decodable {
     struct Asset: Decodable {
         let name: String
         let browserDownloadURL: String
+        let digest: String?
 
         enum CodingKeys: String, CodingKey {
             case name
             case browserDownloadURL = "browser_download_url"
+            case digest
         }
     }
 

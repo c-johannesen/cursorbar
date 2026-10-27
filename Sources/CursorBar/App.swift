@@ -1,4 +1,5 @@
 import AppKit
+import PaceCore
 import SwiftUI
 
 @main
@@ -57,6 +58,9 @@ enum CursorBarMain {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        guard LaunchAtLogin.wantsEnabled else { return }
+        let notice = LaunchAtLogin.sync()
+        NSLog("CursorBar open-at-login: \(notice ?? "enabled")")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -82,6 +86,8 @@ struct CursorBarApp: App {
 
 enum MenuBarPrefs {
     static let showQuotaKey = "menuBarShowQuota"
+    static let showAutoPaceKey = "menuBarShowAutoPace"
+    static let showApiPaceKey = "menuBarShowApiPace"
     static let showDailyKey = "menuBarShowDaily"
     static let showOverspendKey = "menuBarShowOverspend"
     static let showAgentsKey = "menuBarShowAgents"
@@ -90,8 +96,10 @@ enum MenuBarPrefs {
 private struct MenuBarLabel: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var agents: AgentMonitor
-    @AppStorage(MenuBarPrefs.showQuotaKey) private var showQuota = true
-    @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = true
+    @AppStorage(MenuBarPrefs.showQuotaKey) private var showQuota = false
+    @AppStorage(MenuBarPrefs.showAutoPaceKey) private var showAutoPace = true
+    @AppStorage(MenuBarPrefs.showApiPaceKey) private var showApiPace = true
+    @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = false
     @AppStorage(MenuBarPrefs.showOverspendKey) private var showOverspend = true
     @AppStorage(MenuBarPrefs.showAgentsKey) private var showAgents = true
     @StateObject private var chrome = MenuBarChromeMonitor()
@@ -112,7 +120,12 @@ private struct MenuBarLabel: View {
     }
 
     private var hasVisibleContent: Bool {
-        showAgents || showQuota || showDaily || (showOverspend && store.hasOverspend)
+        showAgents
+            || showQuota
+            || showAutoPace
+            || showApiPace
+            || showDaily
+            || (showOverspend && store.hasOverspend)
     }
 
     private var renderedImage: NSImage? {
@@ -130,6 +143,22 @@ private struct MenuBarLabel: View {
                     percent: store.quotaPercentUsed,
                     fillColor: store.statusColor,
                     isDark: isDark
+                )
+            }
+            if showAutoPace {
+                MenuBarBarGauge(
+                    percent: store.autoDailyUtilizationPercentForDisplay,
+                    fillColor: store.autoDailyStatusColor,
+                    isDark: isDark,
+                    prefix: "CM"
+                )
+            }
+            if showApiPace {
+                MenuBarBarGauge(
+                    percent: store.apiDailyUtilizationPercentForDisplay,
+                    fillColor: store.apiDailyStatusColor,
+                    isDark: isDark,
+                    prefix: "OM"
                 )
             }
             if showDaily {
@@ -238,6 +267,7 @@ private struct MenuBarBarGauge: View {
     let percent: Double?
     let fillColor: Color
     let isDark: Bool
+    var prefix: String? = nil
 
     private var textColor: Color {
         isDark ? .white : .black
@@ -248,30 +278,43 @@ private struct MenuBarBarGauge: View {
     }
 
     private var valueText: String {
-        guard let percent else { return "–" }
-        return "\(Int(percent.rounded()))%"
+        let body: String
+        if let percent {
+            body = "\(Int(percent.rounded()))%"
+        } else {
+            body = "–"
+        }
+        if let prefix {
+            return "\(prefix) \(body)"
+        }
+        return body
+    }
+
+    private var width: CGFloat {
+        prefix == nil ? 38 : 56
     }
 
     var body: some View {
+        // No GeometryReader: ImageRenderer gives it a zero proposed size, so a
+        // 0% fill made the whole Daily/CM/OM strip collapse.
         ZStack {
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(trackColor)
+            HStack(spacing: 0) {
+                let fillWidth = MenuBarBarFill.width(percent: percent, in: width)
+                if fillWidth > 0 {
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(trackColor)
-                    if let percent {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(fillColor.opacity(0.85))
-                            .frame(width: max(geometry.size.width * min(percent / 100.0, 1), percent > 0 ? 4 : 0))
-                    }
+                        .fill(fillColor.opacity(0.85))
+                        .frame(width: fillWidth)
                 }
+                Spacer(minLength: 0)
             }
-
             Text(valueText)
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .font(.system(size: prefix == nil ? 9 : 8, weight: .semibold, design: .monospaced))
                 .foregroundStyle(textColor)
                 .shadow(color: isDark ? .black.opacity(0.4) : .white.opacity(0.4), radius: 0.5)
         }
-        .frame(width: 38, height: 16)
+        .frame(width: width, height: 16)
         .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 }
@@ -297,12 +340,11 @@ private struct UsageMeterView: View {
     let color: Color
     var usedCents: Int?
     var limitCents: Int?
-    var remainingCents: Int?
-    var usedLabel: String = "Used"
-    var footnote: String?
+    /// Nested under a parent total meter (Auto/API under Included or Daily).
+    var indented: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
                 Text(title)
                     .font(.caption.weight(.medium))
@@ -320,29 +362,50 @@ private struct UsageMeterView: View {
                     .frame(width: 30, alignment: .trailing)
             }
 
-            if let detailText = detailText {
-                Text(detailText)
+            if let usedCents, let limitCents {
+                Text("\(UsageStore.formatDollars(cents: usedCents)) / \(UsageStore.formatDollars(cents: limitCents))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
-
-            if let footnote {
-                Text(footnote)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
         }
+        .padding(.leading, indented ? 12 : 0)
+    }
+}
+
+/// MenuBarExtra keeps the last window height when the menu gets shorter and
+/// centers the smaller content, which leaves empty bands above and below.
+private struct MenuBarPanelSizer: NSViewRepresentable {
+    var height: CGFloat
+
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
     }
 
-    private var detailText: String? {
-        guard let usedCents, let limitCents else { return nil }
-
-        var text = "\(usedLabel) \(UsageStore.formatDollars(cents: usedCents)) / \(UsageStore.formatDollars(cents: limitCents))"
-        if let remainingCents {
-            text += " · \(UsageStore.formatDollars(cents: remainingCents)) left"
+    func updateNSView(_ nsView: NSView, context: Context) {
+        let height = height
+        DispatchQueue.main.async {
+            guard height > 1, let window = nsView.window else { return }
+            let frame = window.frame
+            guard abs(frame.height - height) > 0.5 else { return }
+            window.setFrame(
+                NSRect(
+                    x: frame.origin.x,
+                    y: frame.maxY - height,
+                    width: frame.width,
+                    height: height
+                ),
+                display: true,
+                animate: false
+            )
         }
-        return text
+    }
+}
+
+private struct PanelHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
@@ -351,13 +414,18 @@ private struct MenuContentView: View {
     @ObservedObject var updater: UpdateChecker
     @ObservedObject var agents: AgentMonitor
     @State private var showSettings = false
-    @AppStorage(MenuBarPrefs.showQuotaKey) private var showQuota = true
-    @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = true
+    @State private var openAtLogin = false
+    @State private var openAtLoginNotice: String?
+    @State private var panelHeight: CGFloat = 0
+    @AppStorage(MenuBarPrefs.showQuotaKey) private var showQuota = false
+    @AppStorage(MenuBarPrefs.showAutoPaceKey) private var showAutoPace = true
+    @AppStorage(MenuBarPrefs.showApiPaceKey) private var showApiPace = true
+    @AppStorage(MenuBarPrefs.showDailyKey) private var showDaily = false
     @AppStorage(MenuBarPrefs.showOverspendKey) private var showOverspend = true
     @AppStorage(MenuBarPrefs.showAgentsKey) private var showAgents = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             header
             Divider()
 
@@ -382,25 +450,85 @@ private struct MenuContentView: View {
                 settingsSection
             }
 
+            if openAtLoginNotice != nil {
+                Divider()
+                openAtLoginNoticeSection
+            }
+
             Divider()
             footer
         }
         .padding(14)
         .frame(width: 280)
+        .fixedSize(horizontal: false, vertical: true)
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: PanelHeightKey.self, value: proxy.size.height)
+            }
+        }
+        .onPreferenceChange(PanelHeightKey.self) { panelHeight = $0 }
+        .background(MenuBarPanelSizer(height: panelHeight))
+        .task(id: loginStatusWatch) {
+            refreshOpenAtLogin()
+            guard loginStatusWatch else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                refreshOpenAtLogin()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshOpenAtLogin()
+        }
+    }
+
+    /// Keep the login toggle current while the menu stays open and the user
+    /// approves CursorBar in System Settings.
+    private var loginStatusWatch: Bool {
+        openAtLoginNotice != nil || showSettings
+    }
+
+    private var openAtLoginNoticeSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(openAtLoginNotice ?? "")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Open Login Items") {
+                LaunchAtLogin.openSystemSettings()
+            }
+            .font(.caption)
+        }
     }
 
     private var settingsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
+            Toggle("Open at login", isOn: Binding(
+                get: { openAtLogin },
+                set: { enabled in
+                    openAtLoginNotice = enabled ? LaunchAtLogin.enable() : LaunchAtLogin.disable()
+                    openAtLogin = LaunchAtLogin.wantsEnabled
+                }
+            ))
+
             Text("Show in menu bar")
                 .font(.caption.weight(.medium))
+                .padding(.top, 4)
 
             Toggle("Agents badge", isOn: $showAgents)
             Toggle("Quota gauge", isOn: $showQuota)
-            Toggle("Daily utilization gauge", isOn: $showDaily)
+            Toggle("Cursor Models daily (CM)", isOn: $showAutoPace)
+            Toggle("Other Models daily (OM)", isOn: $showApiPace)
+            Toggle("Daily total (mixed)", isOn: $showDaily)
             Toggle("Overspend amount", isOn: $showOverspend)
         }
         .toggleStyle(.checkbox)
         .font(.caption)
+    }
+
+    private func refreshOpenAtLogin() {
+        openAtLoginNotice = LaunchAtLogin.sync()
+        openAtLogin = LaunchAtLogin.wantsEnabled
     }
 
     private var agentsSection: some View {
@@ -513,20 +641,22 @@ private struct MenuContentView: View {
 
     @ViewBuilder
     private var usageSection: some View {
-        let hasBillingMeters = store.includedPercentUsed != nil
+        let hasIncludedBlock = store.includedPercentUsed != nil
             || store.cursorModelsPercentUsed != nil
             || store.otherModelsPercentUsed != nil
+        let hasDailyBlock = store.dailyUtilizationPercent != nil
+            || store.autoDailyUtilizationPercentForDisplay != nil
+            || store.apiDailyUtilizationPercentForDisplay != nil
 
-        if hasBillingMeters {
-            VStack(alignment: .leading, spacing: 10) {
+        if hasIncludedBlock {
+            VStack(alignment: .leading, spacing: 6) {
                 if let percentUsed = store.includedPercentUsed {
                     UsageMeterView(
                         title: "Included usage",
                         percent: percentUsed,
                         color: store.includedStatusColor,
                         usedCents: store.includedUsedCreditsCents,
-                        limitCents: store.includedLimitCreditsCents,
-                        remainingCents: store.includedRemainingCreditsCents
+                        limitCents: store.includedLimitCreditsCents
                     )
                 }
 
@@ -534,7 +664,8 @@ private struct MenuContentView: View {
                     UsageMeterView(
                         title: "Cursor Models",
                         percent: cursorModelsPercent,
-                        color: store.cursorModelsStatusColor
+                        color: store.cursorModelsStatusColor,
+                        indented: true
                     )
                 }
 
@@ -544,29 +675,57 @@ private struct MenuContentView: View {
                         percent: otherModelsPercent,
                         color: store.otherModelsStatusColor,
                         usedCents: store.otherModelsUsedCreditsCents,
-                        limitCents: store.otherModelsLimitCreditsCents
+                        limitCents: store.otherModelsLimitCreditsCents,
+                        indented: true
                     )
                 }
             }
         }
 
-        if hasBillingMeters, store.dailyUtilizationPercent != nil {
+        if hasIncludedBlock, hasDailyBlock {
             Divider()
         }
 
-        if let dailyPercent = store.dailyUtilizationPercent {
-            UsageMeterView(
-                title: "Daily utilization",
-                percent: dailyPercent,
-                color: store.dailyStatusColor,
-                usedCents: store.todaySpendCents,
-                limitCents: store.dailyBudgetCents,
-                usedLabel: "Today",
-                footnote: store.workingDaysInCycle.map { "Daily budget = quota / \($0) working days" }
-            )
+        if hasDailyBlock {
+            VStack(alignment: .leading, spacing: 6) {
+                if let dailyPercent = store.dailyUtilizationPercent {
+                    UsageMeterView(
+                        title: "Daily",
+                        percent: dailyPercent,
+                        color: store.dailyStatusColor,
+                        usedCents: store.todaySpendCents,
+                        limitCents: store.dailyBudgetCents
+                    )
+                } else {
+                    Text("Daily")
+                        .font(.caption.weight(.medium))
+                }
+
+                if let autoPct = store.autoDailyUtilizationPercentForDisplay {
+                    UsageMeterView(
+                        title: "Cursor Models",
+                        percent: autoPct,
+                        color: store.autoDailyStatusColor,
+                        usedCents: store.todayAutoSpendCents,
+                        limitCents: store.autoDailyBudgetCents,
+                        indented: true
+                    )
+                }
+
+                if let apiPct = store.apiDailyUtilizationPercentForDisplay {
+                    UsageMeterView(
+                        title: "Other Models",
+                        percent: apiPct,
+                        color: store.apiDailyStatusColor,
+                        usedCents: store.todayApiSpendCents,
+                        limitCents: store.apiDailyBudgetCents,
+                        indented: true
+                    )
+                }
+            }
         }
 
-        if store.hasTokenTotals, hasBillingMeters || store.dailyUtilizationPercent != nil {
+        if store.hasTokenTotals, hasIncludedBlock || hasDailyBlock {
             Divider()
         }
 
@@ -683,12 +842,12 @@ private struct MenuContentView: View {
     }
 
     private var footer: some View {
-        HStack {
+        HStack(alignment: .center, spacing: 8) {
             Text("Updated \(store.lastUpdatedText) · v\(UpdateChecker.currentVersion)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-
-            Spacer()
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             Button {
                 showSettings.toggle()

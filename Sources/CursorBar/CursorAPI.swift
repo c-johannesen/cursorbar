@@ -1,9 +1,11 @@
 import Foundation
+import PaceCore
 
 enum CursorAPIError: Error, LocalizedError {
     case notAuthenticated
     case invalidResponse
     case httpError(statusCode: Int)
+    case incompleteEvents
 
     var errorDescription: String? {
         switch self {
@@ -13,6 +15,8 @@ enum CursorAPIError: Error, LocalizedError {
             "Could not parse usage data from Cursor."
         case .httpError(let statusCode):
             "Cursor API returned HTTP \(statusCode)."
+        case .incompleteEvents:
+            "Usage events were cut off before the day was fully counted."
         }
     }
 }
@@ -80,6 +84,7 @@ struct UsageEventsPage: Decodable, Sendable {
 }
 
 struct UsageEvent: Decodable, Sendable {
+    let model: String?
     let chargedCents: Double?
     let tokenUsage: TokenUsage?
 
@@ -90,6 +95,12 @@ struct UsageEvent: Decodable, Sendable {
     var costCents: Double {
         chargedCents ?? tokenUsage?.totalCents ?? 0
     }
+}
+
+struct TodaySpend: Sendable, Equatable {
+    var totalCents: Int
+    var autoCents: Int
+    var apiCents: Int
 }
 
 struct PublicProfileTokens: Equatable, Sendable {
@@ -125,16 +136,16 @@ enum CursorAPI {
         }
     }
 
-    /// Sums usage-event cost for today's Daily window, in cents.
+    /// Sums usage events in today's Daily window, split Auto vs API by model.
     /// Starts at local midnight, or at `cycleStart` when the billing cycle reset later the same day.
-    static func fetchTodaySpendCents(cycleStart: Date? = nil) async throws -> Int {
+    static func fetchTodaySpend(cycleStart: Date? = nil) async throws -> TodaySpend {
         var credentials = try TokenProvider.loadSessionCredentials()
 
         do {
-            return try await requestTodaySpendCents(credentials: credentials, cycleStart: cycleStart)
+            return try await requestTodaySpend(credentials: credentials, cycleStart: cycleStart)
         } catch CursorAPIError.notAuthenticated {
             credentials = try TokenProvider.loadSessionCredentials()
-            return try await requestTodaySpendCents(credentials: credentials, cycleStart: cycleStart)
+            return try await requestTodaySpend(credentials: credentials, cycleStart: cycleStart)
         }
     }
 
@@ -148,20 +159,20 @@ enum CursorAPI {
         return max(midnight, cycleStart)
     }
 
-    private static func requestTodaySpendCents(
+    private static func requestTodaySpend(
         credentials: SessionCredentials,
         cycleStart: Date?
-    ) async throws -> Int {
+    ) async throws -> TodaySpend {
         let windowStart = todaySpendWindowStart(cycleStart: cycleStart)
         let startMs = String(Int(windowStart.timeIntervalSince1970 * 1000))
         let endMs = String(Int(Date().timeIntervalSince1970 * 1000))
 
         let pageSize = 100
-        let maxPages = 10
-        var totalCents = 0.0
+        var autoCents = 0.0
+        var apiCents = 0.0
         var page = 1
 
-        while page <= maxPages {
+        pageLoop: while true {
             let result = try await requestUsageEventsPage(
                 credentials: credentials,
                 startMs: startMs,
@@ -169,15 +180,33 @@ enum CursorAPI {
                 page: page,
                 pageSize: pageSize
             )
-            totalCents += result.usageEventsDisplay.reduce(0) { $0 + $1.costCents }
-
-            if page * pageSize >= result.totalUsageEventsCount || result.usageEventsDisplay.isEmpty {
-                break
+            for event in result.usageEventsDisplay {
+                switch UsagePoolClassifier.pool(forModel: event.model) {
+                case .auto:
+                    autoCents += event.costCents
+                case .api:
+                    apiCents += event.costCents
+                }
             }
-            page += 1
+
+            switch UsageEventPager.decision(
+                page: page,
+                pageSize: pageSize,
+                eventsOnPage: result.usageEventsDisplay.count,
+                totalCount: result.totalUsageEventsCount
+            ) {
+            case .done:
+                break pageLoop
+            case .fetchNext:
+                page += 1
+            case .incomplete:
+                throw CursorAPIError.incompleteEvents
+            }
         }
 
-        return Int(totalCents.rounded())
+        let auto = Int(autoCents.rounded())
+        let api = Int(apiCents.rounded())
+        return TodaySpend(totalCents: auto + api, autoCents: auto, apiCents: api)
     }
 
     private static func requestUsageEventsPage(
