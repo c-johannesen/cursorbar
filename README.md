@@ -110,13 +110,15 @@ Common issues:
 | App won't open from Finder | Run `bash scripts/launch.sh` — it clears Gatekeeper quarantine flags |
 | `Swift is not installed` | Run `xcode-select --install` |
 | `No auth token found` | Sign out and back into Cursor, then relaunch CursorBar |
+| `Could not decrypt auth token` or a prompt for **Cursor Safe Storage** | Click **Always Allow** on the keychain prompt, then click **Refresh**. Cursor encrypts the session token; CursorBar decrypts it with that keychain item and does not store the token. Reinstalling may ask again |
 
 ## How it works
 
 1. Reads `cursorAuth/accessToken` from Cursor's local SQLite database  
    `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`
-2. Derives a session cookie from the JWT
-3. Calls `GET https://cursor.com/api/usage-summary`
+2. If Cursor stored it as `cursor-safe-storage`, decrypts it with the **Cursor Safe Storage** keychain item
+3. Derives a session cookie from the JWT
+4. Calls `GET https://cursor.com/api/usage-summary`
 
 The token is read fresh on every refresh and is **never stored** by CursorBar.
 

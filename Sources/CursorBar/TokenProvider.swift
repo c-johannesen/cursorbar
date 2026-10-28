@@ -1,10 +1,12 @@
 import Foundation
 import SQLite3
 
-enum TokenProviderError: Error, LocalizedError {
+enum TokenProviderError: Error, LocalizedError, Equatable {
     case databaseNotFound
     case tokenNotFound
     case invalidToken
+    case keychainAccessDenied
+    case decryptFailed
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +16,10 @@ enum TokenProviderError: Error, LocalizedError {
             "No auth token found. Please log in to Cursor."
         case .invalidToken:
             "Could not parse auth token."
+        case .keychainAccessDenied:
+            "CursorBar needs access to the \"Cursor Safe Storage\" keychain item."
+        case .decryptFailed:
+            "Could not decrypt auth token."
         }
     }
 }
@@ -50,13 +56,18 @@ enum TokenProvider {
             throw TokenProviderError.tokenNotFound
         }
 
-        let accessToken = String(cString: cString)
+        let storedToken = String(cString: cString)
+        let accessToken = try CursorSafeStorage.accessToken(from: storedToken)
+        return try sessionCredentials(fromAccessToken: accessToken)
+    }
+
+    static func sessionCredentials(fromAccessToken accessToken: String) throws -> SessionCredentials {
         let userID = try extractUserID(from: accessToken)
         let cookieValue = "\(userID)%3A%3A\(accessToken)"
         return SessionCredentials(cookieValue: cookieValue)
     }
 
-    private static func extractUserID(from jwt: String) throws -> String {
+    static func extractUserID(from jwt: String) throws -> String {
         let parts = jwt.split(separator: ".")
         guard parts.count >= 2 else {
             throw TokenProviderError.invalidToken

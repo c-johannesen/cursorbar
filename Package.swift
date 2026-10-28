@@ -8,7 +8,14 @@ let package = Package(
         .executableTarget(
             name: "CursorBar",
             path: "Sources/CursorBar",
-            linkerSettings: [.linkedLibrary("sqlite3")]
+            linkerSettings: [
+                .linkedLibrary("sqlite3"),
+                .linkedFramework("Security"),
+            ]
+        ),
+        .testTarget(
+            name: "CursorBarTests",
+            dependencies: ["CursorBar"]
         ),
     ]
 )
